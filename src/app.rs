@@ -1,4 +1,6 @@
-use crate::action::{Action, ActionKind, ExecResult};
+use crate::action::{
+    self, Action, ActionKind, ExecResult, PendingPluginRun, PluginRunOutcome, TextPluginStep,
+};
 use crate::config::Config;
 use crate::focus::{self, FocusTracker};
 use crate::search::SearchEngine;
@@ -62,6 +64,13 @@ struct RadialMenuState {
     entries: Vec<RadialMenuEntry>,
 }
 
+struct PluginPromptState {
+    action_name: String,
+    title: String,
+    input: String,
+    pending: PendingPluginRun,
+}
+
 /// Notification that disappears after a timeout.
 struct Toast {
     message: String,
@@ -106,6 +115,8 @@ pub struct QuickerApp {
     edit_field1: String, // command / path / url / script / text / template
     edit_field2: String, // args / shell / fallback url
     edit_field3: String, // working_dir
+    edit_plugin_steps: Vec<TextPluginStep>,
+    plugin_prompt: Option<PluginPromptState>,
 }
 
 impl QuickerApp {
@@ -152,6 +163,8 @@ impl QuickerApp {
             edit_field1: String::new(),
             edit_field2: String::new(),
             edit_field3: String::new(),
+            edit_plugin_steps: Vec::new(),
+            plugin_prompt: None,
         }
     }
 
@@ -163,11 +176,9 @@ impl QuickerApp {
         });
     }
 
-    fn execute_action(&mut self, action: &Action) {
-        match action.execute() {
-            ExecResult::Ok => {
-                self.show_toast(format!("✓ {}", action.name), false);
-            }
+    fn handle_exec_result(&mut self, action_name: &str, result: ExecResult) {
+        match result {
+            ExecResult::Ok => self.show_toast(format!("✓ {}", action_name), false),
             ExecResult::OkWithMessage(msg) => {
                 if msg.len() > 100 {
                     self.script_output = msg;
@@ -176,9 +187,38 @@ impl QuickerApp {
                     self.show_toast(msg, false);
                 }
             }
-            ExecResult::Err(e) => {
-                self.show_toast(e, true);
+            ExecResult::Err(err) => self.show_toast(err, true),
+        }
+    }
+
+    fn run_plugin_pipeline(&mut self, action_name: &str, pending: PendingPluginRun) {
+        match action::continue_plugin_pipeline(pending) {
+            PluginRunOutcome::Complete(result) => self.handle_exec_result(action_name, result),
+            PluginRunOutcome::NeedsInput { prompt, pending } => {
+                self.plugin_prompt = Some(PluginPromptState {
+                    action_name: action_name.into(),
+                    title: prompt.title,
+                    input: prompt.value,
+                    pending,
+                });
             }
+        }
+    }
+
+    fn execute_action(&mut self, action: &Action) {
+        match &action.kind {
+            ActionKind::PluginPipeline { steps } => match action::run_plugin_pipeline(steps) {
+                PluginRunOutcome::Complete(result) => self.handle_exec_result(&action.name, result),
+                PluginRunOutcome::NeedsInput { prompt, pending } => {
+                    self.plugin_prompt = Some(PluginPromptState {
+                        action_name: action.name.clone(),
+                        title: prompt.title,
+                        input: prompt.value,
+                        pending,
+                    });
+                }
+            },
+            _ => self.handle_exec_result(&action.name, action.execute()),
         }
     }
 
@@ -246,6 +286,7 @@ impl QuickerApp {
         self.edit_field1.clear();
         self.edit_field2.clear();
         self.edit_field3.clear();
+        self.edit_plugin_steps.clear();
     }
 
     fn global_profile_idx(&self) -> usize {
@@ -559,6 +600,192 @@ impl QuickerApp {
             )
         } else {
             format!("{} / {}", ActionSection::GlobalTools.label(), profile_name)
+        }
+    }
+
+    fn render_plugin_steps_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label("Plugin commands:");
+        ui.label(
+            egui::RichText::new(
+                "This plugin currently supports 4 commands. Drag rows to reorder how the plugin runs.",
+            )
+            .weak()
+            .small(),
+        );
+        ui.add_space(6.0);
+
+        ui.columns(2, |columns| {
+            columns[0].group(|ui| {
+                ui.label(egui::RichText::new("Selection").strong());
+                ui.label(egui::RichText::new("Read text from the selected part.").small().weak());
+                if ui.button("Read Selected Text").clicked() {
+                    self.edit_plugin_steps.push(TextPluginStep::ReadSelectedText);
+                }
+            });
+
+            columns[1].group(|ui| {
+                ui.label(egui::RichText::new("Transform").strong());
+                ui.label(egui::RichText::new("Modify text inside the plugin flow.").small().weak());
+                if ui.button("Uppercase Text").clicked() {
+                    self.edit_plugin_steps.push(TextPluginStep::Uppercase);
+                }
+            });
+        });
+
+        ui.add_space(6.0);
+
+        ui.columns(2, |columns| {
+            columns[0].group(|ui| {
+                ui.label(egui::RichText::new("Output").strong());
+                ui.label(egui::RichText::new("Write the result into the selected part.").small().weak());
+                if ui.button("Write Selected Text").clicked() {
+                    self.edit_plugin_steps.push(TextPluginStep::WriteSelectedText);
+                }
+            });
+
+            columns[1].group(|ui| {
+                ui.label(egui::RichText::new("Interaction").strong());
+                ui.label(egui::RichText::new("Ask the user to enter text.").small().weak());
+                if ui.button("Prompt For Input").clicked() {
+                    self.edit_plugin_steps.push(TextPluginStep::PromptInput {
+                        title: "Input".into(),
+                        default_value: String::new(),
+                    });
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+
+        if self.edit_plugin_steps.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Add at least one command. A common plugin is Read Selected Text -> Uppercase Text -> Write Selected Text.",
+                )
+                .weak(),
+            );
+            return;
+        }
+
+        let mut move_request = None;
+        let mut delete_request = None;
+        let len = self.edit_plugin_steps.len();
+
+        for idx in 0..len {
+            let id = egui::Id::new(("plugin_step", idx));
+            let frame = egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
+            let (inner, dropped) = ui.dnd_drop_zone::<usize, _>(frame, |ui| {
+                ui.dnd_drag_source(id, idx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("⋮⋮").monospace());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}. {}",
+                                idx + 1,
+                                self.edit_plugin_steps[idx].label()
+                            ))
+                            .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Delete").clicked() {
+                                delete_request = Some(idx);
+                            }
+                        });
+                    });
+
+                    if let TextPluginStep::PromptInput {
+                        title,
+                        default_value,
+                    } = &mut self.edit_plugin_steps[idx]
+                    {
+                        ui.add_space(6.0);
+                        ui.label("Dialog title:");
+                        ui.text_edit_singleline(title);
+                        ui.label("Default value:");
+                        ui.text_edit_singleline(default_value);
+                    }
+                });
+            });
+
+            if inner.response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+
+            if let Some(from_idx) = dropped.as_deref().copied() {
+                move_request = Some((from_idx, idx));
+            }
+
+            ui.add_space(6.0);
+        }
+
+        let end_frame = egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(55)));
+        let (_, dropped_at_end) = ui.dnd_drop_zone::<usize, _>(end_frame, |ui| {
+            ui.label(egui::RichText::new("Drop here to move to the end").weak());
+        });
+
+        if let Some(from_idx) = dropped_at_end.as_deref().copied() {
+            move_request = Some((from_idx, self.edit_plugin_steps.len()));
+        }
+
+        if let Some(idx) = delete_request {
+            self.edit_plugin_steps.remove(idx);
+        }
+
+        if let Some((from_idx, to_idx)) = move_request {
+            move_list_item(&mut self.edit_plugin_steps, from_idx, to_idx);
+        }
+    }
+
+    fn render_plugin_prompt(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = &mut self.plugin_prompt else {
+            return;
+        };
+
+        let mut submit = false;
+        let mut cancel = false;
+
+        egui::Window::new(prompt.title.clone())
+            .id(egui::Id::new("plugin_prompt_window"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Enter text for this plugin step:");
+                ui.label(egui::RichText::new("This command needs manual input before the plugin can continue.").small().weak());
+                let response =
+                    ui.add(egui::TextEdit::singleline(&mut prompt.input).desired_width(320.0));
+                if ui.memory(|memory| memory.focused().is_none()) {
+                    response.request_focus();
+                }
+
+                submit = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui.button("OK").clicked() {
+                        submit = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.plugin_prompt = None;
+            self.show_toast("Plugin input cancelled".into(), true);
+            return;
+        }
+
+        if submit {
+            if let Some(mut prompt) = self.plugin_prompt.take() {
+                prompt.pending.current_text = prompt.input;
+                self.run_plugin_pipeline(&prompt.action_name, prompt.pending);
+            }
         }
     }
 
@@ -997,12 +1224,14 @@ impl QuickerApp {
     }
 
     fn render_action_editor(&mut self, ui: &mut egui::Ui) {
+        let is_plugin_editor = self.edit_kind_idx == 10;
+
         ui.horizontal(|ui| {
             if ui.button("← Cancel").clicked() {
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
             }
-            ui.heading("Add Action");
+            ui.heading(if is_plugin_editor { "Add Plugin" } else { "Add Action" });
         });
         ui.separator();
 
@@ -1029,7 +1258,7 @@ impl QuickerApp {
             ui.text_edit_singleline(&mut self.edit_tags);
 
             ui.add_space(8.0);
-            ui.label("Action Type:");
+            ui.label(if is_plugin_editor { "Item Type:" } else { "Action Type:" });
 
             let kinds = [
                 "Run Program",
@@ -1042,6 +1271,7 @@ impl QuickerApp {
                 "Search Clipboard Text",
                 "Open Clipboard Text",
                 "Run Clipboard Text",
+                "Plugin",
             ];
             egui::ComboBox::from_id_salt("action_kind")
                 .selected_text(kinds[self.edit_kind_idx])
@@ -1111,6 +1341,17 @@ impl QuickerApp {
                     ui.text_edit_singleline(&mut self.edit_field2);
                     ui.label("Runs the current clipboard text as a command.");
                 }
+                10 => {
+                    self.render_plugin_steps_editor(ui);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Commands are organized by functionality: Selection, Transform, Output, and Interaction.",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                }
                 _ => {}
             }
 
@@ -1173,6 +1414,18 @@ impl QuickerApp {
                             self.edit_field2.clone()
                         },
                     },
+                    10 => {
+                        if self.edit_plugin_steps.is_empty() {
+                            self.show_toast(
+                                "Add at least one plugin step before saving.".into(),
+                                true,
+                            );
+                            return;
+                        }
+                        ActionKind::PluginPipeline {
+                            steps: self.edit_plugin_steps.clone(),
+                        }
+                    }
                     _ => unreachable!(),
                 };
 
@@ -1350,6 +1603,9 @@ impl eframe::App for QuickerApp {
             if self.radial_menu.is_some() {
                 self.cancel_radial_menu(ctx);
                 ctx.request_repaint();
+            } else if self.plugin_prompt.is_some() {
+                self.plugin_prompt = None;
+                self.show_toast("Plugin input cancelled".into(), true);
             } else if self.view != View::Panel {
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
@@ -1374,6 +1630,7 @@ impl eframe::App for QuickerApp {
             });
         }
 
+        self.render_plugin_prompt(ctx);
         self.render_radial_menu(ctx);
         self.render_toast(ctx);
         ctx.request_repaint_after(INPUT_POLL_INTERVAL);
@@ -1383,6 +1640,7 @@ impl eframe::App for QuickerApp {
 fn default_action_icon(action: &Action) -> &'static str {
     match &action.kind {
         ActionKind::Group { .. } => "📂",
+        ActionKind::PluginPipeline { .. } => "🧩",
         _ => "▶",
     }
 }
@@ -1393,6 +1651,21 @@ fn clamp_to_view(value: f32, min: f32, max: f32) -> f32 {
     } else {
         (min + max) * 0.5
     }
+}
+
+fn move_list_item<T>(items: &mut Vec<T>, from_idx: usize, to_idx: usize) {
+    if from_idx >= items.len() || from_idx == to_idx {
+        return;
+    }
+
+    let item = items.remove(from_idx);
+    let insert_idx = if from_idx < to_idx {
+        to_idx.saturating_sub(1)
+    } else {
+        to_idx
+    }
+    .min(items.len());
+    items.insert(insert_idx, item);
 }
 
 fn radial_ring_counts(entry_count: usize) -> (usize, usize) {

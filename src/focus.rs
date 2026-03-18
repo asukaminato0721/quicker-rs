@@ -2,16 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub const BROWSER_PROCESS_PATTERNS: &[&str] = &[
-    "chrome",
-    "chromium",
-    "firefox",
-    "msedge",
-    "edge",
-    "brave",
-    "opera",
-    "vivaldi",
-    "zen",
-    "safari",
+    "chrome", "chromium", "firefox", "msedge", "edge", "brave", "opera", "vivaldi", "zen", "safari",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

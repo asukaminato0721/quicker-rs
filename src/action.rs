@@ -54,8 +54,47 @@ pub enum ActionKind {
         #[serde(default = "default_shell")]
         shell: String,
     },
+    /// Run an ordered text-processing pipeline against the current selection
+    PluginPipeline { steps: Vec<TextPluginStep> },
     /// A group/folder that contains sub-actions
     Group { actions: Vec<Action> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TextPluginStep {
+    ReadSelectedText,
+    Uppercase,
+    WriteSelectedText,
+    PromptInput {
+        #[serde(default = "default_prompt_title")]
+        title: String,
+        #[serde(default)]
+        default_value: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginPromptRequest {
+    pub title: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPluginRun {
+    pub steps: Vec<TextPluginStep>,
+    pub next_step_idx: usize,
+    pub current_text: String,
+    pub wrote_to_selection: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginRunOutcome {
+    Complete(ExecResult),
+    NeedsInput {
+        prompt: PluginPromptRequest,
+        pending: PendingPluginRun,
+    },
 }
 
 fn default_shell() -> String {
@@ -68,6 +107,10 @@ fn default_shell() -> String {
 
 fn default_search_url() -> String {
     "https://www.google.com/search?q={query}".into()
+}
+
+fn default_prompt_title() -> String {
+    "Input".into()
 }
 
 /// A single action in the launcher panel.
@@ -186,6 +229,13 @@ impl Action {
                 run_shell_command(&clipboard_text, shell)
             }
 
+            ActionKind::PluginPipeline { steps } => match run_plugin_pipeline(steps) {
+                PluginRunOutcome::Complete(result) => result,
+                PluginRunOutcome::NeedsInput { .. } => ExecResult::Err(
+                    "Plugin pipelines that prompt for input must be run from the UI".into(),
+                ),
+            },
+
             ActionKind::Group { .. } => ExecResult::Ok,
         }
     }
@@ -194,11 +244,124 @@ impl Action {
     pub fn search_text(&self) -> String {
         let mut parts = vec![self.name.clone(), self.description.clone()];
         parts.extend(self.tags.clone());
-        if let ActionKind::Group { actions } = &self.kind {
-            parts.extend(actions.iter().map(Action::search_text));
+        match &self.kind {
+            ActionKind::Group { actions } => {
+                parts.extend(actions.iter().map(Action::search_text));
+            }
+            ActionKind::PluginPipeline { steps } => {
+                parts.extend(steps.iter().map(TextPluginStep::search_text));
+            }
+            _ => {}
         }
         parts.join(" ")
     }
+}
+
+impl TextPluginStep {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::ReadSelectedText => "Read Selected Text",
+            Self::Uppercase => "Uppercase",
+            Self::WriteSelectedText => "Write Into Selected Part",
+            Self::PromptInput { .. } => "Prompt For Input",
+        }
+    }
+
+    pub fn search_text(&self) -> String {
+        match self {
+            Self::PromptInput {
+                title,
+                default_value,
+            } => {
+                format!("{} {} {}", self.label(), title, default_value)
+            }
+            _ => self.label().into(),
+        }
+    }
+}
+
+pub fn run_plugin_pipeline(steps: &[TextPluginStep]) -> PluginRunOutcome {
+    continue_plugin_pipeline(PendingPluginRun {
+        steps: steps.to_vec(),
+        next_step_idx: 0,
+        current_text: String::new(),
+        wrote_to_selection: false,
+    })
+}
+
+pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutcome {
+    while let Some(step) = pending.steps.get(pending.next_step_idx).cloned() {
+        pending.next_step_idx += 1;
+
+        match step {
+            TextPluginStep::ReadSelectedText => match read_selected_text() {
+                Ok(text) => pending.current_text = text,
+                Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
+            },
+            TextPluginStep::Uppercase => {
+                pending.current_text = pending.current_text.to_uppercase();
+            }
+            TextPluginStep::WriteSelectedText => {
+                if pending.current_text.is_empty() {
+                    return PluginRunOutcome::Complete(ExecResult::Err(
+                        "No text is available to write. Add a read or prompt step first.".into(),
+                    ));
+                }
+
+                match write_text_into_selection(&pending.current_text) {
+                    Ok(()) => pending.wrote_to_selection = true,
+                    Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
+                }
+            }
+            TextPluginStep::PromptInput {
+                title,
+                default_value,
+            } => {
+                let value = if pending.current_text.is_empty() {
+                    default_value
+                } else {
+                    pending.current_text.clone()
+                };
+                return PluginRunOutcome::NeedsInput {
+                    prompt: PluginPromptRequest { title, value },
+                    pending,
+                };
+            }
+        }
+    }
+
+    let result = if pending.wrote_to_selection {
+        ExecResult::OkWithMessage(
+            "Plugin pipeline finished and wrote into the selected part".into(),
+        )
+    } else if pending.current_text.trim().is_empty() {
+        ExecResult::OkWithMessage("Plugin pipeline finished".into())
+    } else {
+        ExecResult::OkWithMessage(pending.current_text)
+    };
+
+    PluginRunOutcome::Complete(result)
+}
+
+pub fn read_selected_text() -> Result<String, String> {
+    read_clipboard_text()
+}
+
+pub fn write_text_into_selection(text: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_write_text_into_selection(text) {
+        return result;
+    }
+
+    if try_type_with_command("wtype", &["--"], text)
+        || try_type_with_command("wtype", &[], text)
+        || try_xdotool_type(text)
+    {
+        return Ok(());
+    }
+
+    write_clipboard_text(text)?;
+    Err("Copied text to the clipboard, but no supported typing backend is available to write into the selected part automatically. Install `wtype` or `xdotool`.".into())
 }
 
 fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> ExecResult {
@@ -260,6 +423,23 @@ fn read_clipboard_text() -> Result<String, String> {
         "No usable text was found in the clipboard. On Linux, select text first or copy it explicitly."
             .into(),
     )
+}
+
+fn try_type_with_command(command: &str, prefix_args: &[&str], text: &str) -> bool {
+    match Command::new(command).args(prefix_args).arg(text).status() {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+fn try_xdotool_type(text: &str) -> bool {
+    match Command::new("xdotool")
+        .args(["type", "--clearmodifiers", "--delay", "0", "--", text])
+        .status()
+    {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
 }
 
 fn read_standard_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<String> {
@@ -379,6 +559,8 @@ struct ActionTestRuntime {
     primary_clipboard_reads: VecDeque<Option<String>>,
     shell_calls: Vec<(String, String)>,
     shell_results: VecDeque<ExecResult>,
+    selection_writes: Vec<String>,
+    selection_write_results: VecDeque<Result<(), String>>,
 }
 
 #[cfg(test)]
@@ -443,6 +625,14 @@ fn test_run_shell_command(script: &str, shell: &str) -> Option<ExecResult> {
     with_action_test_runtime(|runtime| {
         runtime.shell_calls.push((shell.into(), script.into()));
         runtime.shell_results.pop_front()
+    })
+}
+
+#[cfg(test)]
+fn test_write_text_into_selection(text: &str) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime.selection_writes.push(text.into());
+        runtime.selection_write_results.pop_front()
     })
 }
 
@@ -733,6 +923,69 @@ mod tests {
         reset_action_test_runtime();
         let result = action(ActionKind::Group { actions: vec![] }).execute();
         assert_eq!(result, ExecResult::Ok);
+    }
+
+    #[test]
+    fn plugin_pipeline_reads_uppercases_and_writes_selected_text() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .standard_clipboard_reads
+                .push_back(Some("hello world".into()));
+            runtime.selection_write_results.push_back(Ok(()));
+        });
+
+        let result = run_plugin_pipeline(&[
+            TextPluginStep::ReadSelectedText,
+            TextPluginStep::Uppercase,
+            TextPluginStep::WriteSelectedText,
+        ]);
+
+        assert_eq!(
+            result,
+            PluginRunOutcome::Complete(ExecResult::OkWithMessage(
+                "Plugin pipeline finished and wrote into the selected part".into()
+            ))
+        );
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.selection_writes, vec!["HELLO WORLD"]);
+        });
+    }
+
+    #[test]
+    fn plugin_pipeline_pauses_for_input_and_resumes() {
+        reset_action_test_runtime();
+
+        let paused = run_plugin_pipeline(&[
+            TextPluginStep::PromptInput {
+                title: "Enter text".into(),
+                default_value: "seed".into(),
+            },
+            TextPluginStep::Uppercase,
+        ]);
+
+        let (prompt, pending) = match paused {
+            PluginRunOutcome::NeedsInput { prompt, pending } => (prompt, pending),
+            other => panic!("unexpected outcome: {other:?}"),
+        };
+
+        assert_eq!(
+            prompt,
+            PluginPromptRequest {
+                title: "Enter text".into(),
+                value: "seed".into(),
+            }
+        );
+
+        let resumed = continue_plugin_pipeline(PendingPluginRun {
+            current_text: "hello".into(),
+            ..pending
+        });
+
+        assert_eq!(
+            resumed,
+            PluginRunOutcome::Complete(ExecResult::OkWithMessage("HELLO".into()))
+        );
     }
 
     #[test]

@@ -803,10 +803,9 @@ mod tests {
             "Google Chrome",
             "/usr/bin/google-chrome-stable"
         )));
-        assert!(profile.matches_process(&focused_process(
-            "Brave Browser",
-            "/usr/bin/brave-browser"
-        )));
+        assert!(
+            profile.matches_process(&focused_process("Brave Browser", "/usr/bin/brave-browser"))
+        );
     }
 
     #[test]
