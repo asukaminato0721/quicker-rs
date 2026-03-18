@@ -344,7 +344,24 @@ pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutco
 }
 
 pub fn read_selected_text() -> Result<String, String> {
-    read_clipboard_text()
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
+    ))]
+    {
+        if let Some(text) = read_primary_clipboard_text(&mut clipboard) {
+            return Ok(text);
+        }
+    }
+
+    if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
+        return Ok(text);
+    }
+
+    Err("No selected text was found. On Linux, select text first before triggering the plugin."
+        .into())
 }
 
 pub fn write_text_into_selection(text: &str) -> Result<(), String> {
@@ -353,15 +370,19 @@ pub fn write_text_into_selection(text: &str) -> Result<(), String> {
         return result;
     }
 
-    if try_type_with_command("wtype", &["--"], text)
-        || try_type_with_command("wtype", &[], text)
-        || try_xdotool_type(text)
+    let mut backend_errors = Vec::new();
+
+    if try_type_with_command("wtype", &[], text, &mut backend_errors).is_ok()
+        || try_xdotool_type(text, &mut backend_errors).is_ok()
     {
         return Ok(());
     }
 
     write_clipboard_text(text)?;
-    Err("Copied text to the clipboard, but no supported typing backend is available to write into the selected part automatically. Install `wtype` or `xdotool`.".into())
+    Err(format!(
+        "Copied text to the clipboard, but automatic typing failed. {}",
+        backend_errors.join(" ")
+    ))
 }
 
 fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> ExecResult {
@@ -425,20 +446,57 @@ fn read_clipboard_text() -> Result<String, String> {
     )
 }
 
-fn try_type_with_command(command: &str, prefix_args: &[&str], text: &str) -> bool {
-    match Command::new(command).args(prefix_args).arg(text).status() {
-        Ok(status) => status.success(),
-        Err(_) => false,
+fn try_type_with_command(
+    command: &str,
+    prefix_args: &[&str],
+    text: &str,
+    backend_errors: &mut Vec<String>,
+) -> Result<(), ()> {
+    match Command::new(command).args(prefix_args).arg(text).output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("exited with status {}", output.status)
+            };
+            backend_errors.push(format!("{command}: {detail}."));
+            Err(())
+        }
+        Err(err) => {
+            backend_errors.push(format!("{command}: {err}."));
+            Err(())
+        }
     }
 }
 
-fn try_xdotool_type(text: &str) -> bool {
+fn try_xdotool_type(text: &str, backend_errors: &mut Vec<String>) -> Result<(), ()> {
     match Command::new("xdotool")
         .args(["type", "--clearmodifiers", "--delay", "0", "--", text])
-        .status()
+        .output()
     {
-        Ok(status) => status.success(),
-        Err(_) => false,
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("exited with status {}", output.status)
+            };
+            backend_errors.push(format!("xdotool: {detail}."));
+            Err(())
+        }
+        Err(err) => {
+            backend_errors.push(format!("xdotool: {err}."));
+            Err(())
+        }
     }
 }
 
@@ -930,7 +988,7 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
             runtime
-                .standard_clipboard_reads
+                .primary_clipboard_reads
                 .push_back(Some("hello world".into()));
             runtime.selection_write_results.push_back(Ok(()));
         });
@@ -986,6 +1044,23 @@ mod tests {
             resumed,
             PluginRunOutcome::Complete(ExecResult::OkWithMessage("HELLO".into()))
         );
+    }
+
+    #[test]
+    fn read_selected_text_prefers_primary_selection_over_clipboard() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .standard_clipboard_reads
+                .push_back(Some("clipboard text".into()));
+            runtime
+                .primary_clipboard_reads
+                .push_back(Some("selected text".into()));
+        });
+
+        let result = read_selected_text();
+
+        assert_eq!(result, Ok("selected text".into()));
     }
 
     #[test]

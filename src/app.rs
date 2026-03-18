@@ -514,12 +514,7 @@ impl QuickerApp {
             radial_ring_counts(menu.entries.len()),
         ) {
             let entry = menu.entries[entry_idx].clone();
-            self.trigger_action(
-                entry.profile_idx,
-                entry.section,
-                entry.action_idx,
-                entry.action,
-            );
+            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
         }
 
         let _ = ctx;
@@ -837,12 +832,7 @@ impl QuickerApp {
             });
 
         if let Some(entry) = clicked_action {
-            self.trigger_action(
-                entry.profile_idx,
-                entry.section,
-                entry.action_idx,
-                entry.action,
-            );
+            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
         }
     }
 
@@ -955,12 +945,7 @@ impl QuickerApp {
             let entries = self.filtered_entries(&self.current_action_entries());
             if entries.len() == 1 && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let entry = entries[0].clone();
-                self.trigger_action(
-                    entry.profile_idx,
-                    entry.section,
-                    entry.action_idx,
-                    entry.action,
-                );
+                self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
                 return;
             }
 
@@ -1014,12 +999,7 @@ impl QuickerApp {
                 .cloned()
                 .or_else(|| active_window_entries.first().cloned())
                 .unwrap();
-            self.trigger_action(
-                entry.profile_idx,
-                entry.section,
-                entry.action_idx,
-                entry.action,
-            );
+            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
             return;
         }
 
