@@ -19,6 +19,7 @@ const RADIAL_INNER_RADIUS: f32 = 108.0;
 const RADIAL_OUTER_RADIUS: f32 = 168.0;
 const RADIAL_SELECTION_PADDING: f32 = 28.0;
 const RADIAL_OVERLAY_MARGIN: f32 = RADIAL_OUTER_RADIUS + 8.0;
+const EXTERNAL_ACTION_DELAY: Duration = Duration::from_millis(80);
 
 #[derive(Clone)]
 struct RadialMenuEntry {
@@ -71,6 +72,19 @@ struct PluginPromptState {
     pending: PendingPluginRun,
 }
 
+enum DeferredExecution {
+    Action(Action),
+    PluginResume {
+        action_name: String,
+        pending: PendingPluginRun,
+    },
+}
+
+struct DeferredExternalExecution {
+    execute_at: Instant,
+    execution: DeferredExecution,
+}
+
 /// Notification that disappears after a timeout.
 struct Toast {
     message: String,
@@ -117,6 +131,7 @@ pub struct QuickerApp {
     edit_field3: String, // working_dir
     edit_plugin_steps: Vec<TextPluginStep>,
     plugin_prompt: Option<PluginPromptState>,
+    deferred_external_execution: Option<DeferredExternalExecution>,
 }
 
 impl QuickerApp {
@@ -165,6 +180,7 @@ impl QuickerApp {
             edit_field3: String::new(),
             edit_plugin_steps: Vec::new(),
             plugin_prompt: None,
+            deferred_external_execution: None,
         }
     }
 
@@ -191,6 +207,94 @@ impl QuickerApp {
         }
     }
 
+    fn reveal_panel(&mut self, ctx: &egui::Context) {
+        if self.panel_hidden {
+            self.panel_hidden = false;
+            self.restore_panel_window(ctx);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
+    fn action_needs_external_focus(action: &Action) -> bool {
+        match &action.kind {
+            ActionKind::PluginPipeline { steps } => steps
+                .iter()
+                .any(|step| matches!(step, TextPluginStep::WriteSelectedText)),
+            _ => false,
+        }
+    }
+
+    fn pending_run_needs_external_focus(pending: &PendingPluginRun) -> bool {
+        pending.steps[pending.next_step_idx..]
+            .iter()
+            .any(|step| matches!(step, TextPluginStep::WriteSelectedText))
+    }
+
+    fn defer_external_execution(&mut self, ctx: &egui::Context, execution: DeferredExecution) {
+        self.deferred_external_execution = Some(DeferredExternalExecution {
+            execute_at: Instant::now() + EXTERNAL_ACTION_DELAY,
+            execution,
+        });
+        self.panel_hidden = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    fn run_deferred_external_execution(&mut self, ctx: &egui::Context) {
+        let Some(deferred) = self.deferred_external_execution.take() else {
+            return;
+        };
+
+        match deferred.execution {
+            DeferredExecution::Action(action) => {
+                let outcome = match &action.kind {
+                    ActionKind::PluginPipeline { steps } => action::run_plugin_pipeline(steps),
+                    _ => {
+                        let result = action.execute();
+                        self.reveal_panel(ctx);
+                        self.handle_exec_result(&action.name, result);
+                        return;
+                    }
+                };
+
+                self.reveal_panel(ctx);
+                match outcome {
+                    PluginRunOutcome::Complete(result) => {
+                        self.handle_exec_result(&action.name, result)
+                    }
+                    PluginRunOutcome::NeedsInput { prompt, pending } => {
+                        self.plugin_prompt = Some(PluginPromptState {
+                            action_name: action.name.clone(),
+                            title: prompt.title,
+                            input: prompt.value,
+                            pending,
+                        });
+                    }
+                }
+            }
+            DeferredExecution::PluginResume {
+                action_name,
+                pending,
+            } => {
+                let outcome = action::continue_plugin_pipeline(pending);
+                self.reveal_panel(ctx);
+                match outcome {
+                    PluginRunOutcome::Complete(result) => {
+                        self.handle_exec_result(&action_name, result)
+                    }
+                    PluginRunOutcome::NeedsInput { prompt, pending } => {
+                        self.plugin_prompt = Some(PluginPromptState {
+                            action_name,
+                            title: prompt.title,
+                            input: prompt.value,
+                            pending,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     fn run_plugin_pipeline(&mut self, action_name: &str, pending: PendingPluginRun) {
         match action::continue_plugin_pipeline(pending) {
             PluginRunOutcome::Complete(result) => self.handle_exec_result(action_name, result),
@@ -205,7 +309,12 @@ impl QuickerApp {
         }
     }
 
-    fn execute_action(&mut self, action: &Action) {
+    fn execute_action(&mut self, ctx: &egui::Context, action: &Action) {
+        if Self::action_needs_external_focus(action) {
+            self.defer_external_execution(ctx, DeferredExecution::Action(action.clone()));
+            return;
+        }
+
         match &action.kind {
             ActionKind::PluginPipeline { steps } => match action::run_plugin_pipeline(steps) {
                 PluginRunOutcome::Complete(result) => self.handle_exec_result(&action.name, result),
@@ -224,6 +333,7 @@ impl QuickerApp {
 
     fn trigger_action(
         &mut self,
+        ctx: &egui::Context,
         profile_idx: usize,
         section: ActionSection,
         action_idx: usize,
@@ -231,7 +341,7 @@ impl QuickerApp {
     ) {
         match action.kind {
             ActionKind::Group { .. } => self.open_group(profile_idx, section, action_idx),
-            _ => self.execute_action(&action),
+            _ => self.execute_action(ctx, &action),
         }
     }
 
@@ -514,7 +624,13 @@ impl QuickerApp {
             radial_ring_counts(menu.entries.len()),
         ) {
             let entry = menu.entries[entry_idx].clone();
-            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
+            self.trigger_action(
+                ctx,
+                entry.profile_idx,
+                entry.section,
+                entry.action_idx,
+                entry.action,
+            );
         }
 
         let _ = ctx;
@@ -602,7 +718,7 @@ impl QuickerApp {
         ui.label("Plugin commands:");
         ui.label(
             egui::RichText::new(
-                "This plugin currently supports 4 commands. Drag rows to reorder how the plugin runs.",
+                "This plugin currently supports 6 commands. Drag rows to reorder how the plugin runs.",
             )
             .weak()
             .small(),
@@ -612,15 +728,28 @@ impl QuickerApp {
         ui.columns(2, |columns| {
             columns[0].group(|ui| {
                 ui.label(egui::RichText::new("Selection").strong());
-                ui.label(egui::RichText::new("Read text from the selected part.").small().weak());
+                ui.label(
+                    egui::RichText::new("Read text from the selected part.")
+                        .small()
+                        .weak(),
+                );
                 if ui.button("Read Selected Text").clicked() {
-                    self.edit_plugin_steps.push(TextPluginStep::ReadSelectedText);
+                    self.edit_plugin_steps
+                        .push(TextPluginStep::ReadSelectedText);
+                }
+                if ui.button("Read Clipboard Text").clicked() {
+                    self.edit_plugin_steps
+                        .push(TextPluginStep::ReadClipboardText);
                 }
             });
 
             columns[1].group(|ui| {
                 ui.label(egui::RichText::new("Transform").strong());
-                ui.label(egui::RichText::new("Modify text inside the plugin flow.").small().weak());
+                ui.label(
+                    egui::RichText::new("Modify text inside the plugin flow.")
+                        .small()
+                        .weak(),
+                );
                 if ui.button("Uppercase Text").clicked() {
                     self.edit_plugin_steps.push(TextPluginStep::Uppercase);
                 }
@@ -632,15 +761,28 @@ impl QuickerApp {
         ui.columns(2, |columns| {
             columns[0].group(|ui| {
                 ui.label(egui::RichText::new("Output").strong());
-                ui.label(egui::RichText::new("Write the result into the selected part.").small().weak());
+                ui.label(
+                    egui::RichText::new("Write the result to a selection or clipboard.")
+                        .small()
+                        .weak(),
+                );
                 if ui.button("Write Selected Text").clicked() {
-                    self.edit_plugin_steps.push(TextPluginStep::WriteSelectedText);
+                    self.edit_plugin_steps
+                        .push(TextPluginStep::WriteSelectedText);
+                }
+                if ui.button("Write Clipboard Text").clicked() {
+                    self.edit_plugin_steps
+                        .push(TextPluginStep::WriteClipboardText);
                 }
             });
 
             columns[1].group(|ui| {
                 ui.label(egui::RichText::new("Interaction").strong());
-                ui.label(egui::RichText::new("Ask the user to enter text.").small().weak());
+                ui.label(
+                    egui::RichText::new("Ask the user to enter text.")
+                        .small()
+                        .weak(),
+                );
                 if ui.button("Prompt For Input").clicked() {
                     self.edit_plugin_steps.push(TextPluginStep::PromptInput {
                         title: "Input".into(),
@@ -655,7 +797,7 @@ impl QuickerApp {
         if self.edit_plugin_steps.is_empty() {
             ui.label(
                 egui::RichText::new(
-                    "Add at least one command. A common plugin is Read Selected Text -> Uppercase Text -> Write Selected Text.",
+                    "Add at least one command. Examples: Read Selected Text -> Uppercase Text -> Write Selected Text, or Read Clipboard Text -> Uppercase Text -> Write Clipboard Text.",
                 )
                 .weak(),
             );
@@ -750,7 +892,13 @@ impl QuickerApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label("Enter text for this plugin step:");
-                ui.label(egui::RichText::new("This command needs manual input before the plugin can continue.").small().weak());
+                ui.label(
+                    egui::RichText::new(
+                        "This command needs manual input before the plugin can continue.",
+                    )
+                    .small()
+                    .weak(),
+                );
                 let response =
                     ui.add(egui::TextEdit::singleline(&mut prompt.input).desired_width(320.0));
                 if ui.memory(|memory| memory.focused().is_none()) {
@@ -779,7 +927,17 @@ impl QuickerApp {
         if submit {
             if let Some(mut prompt) = self.plugin_prompt.take() {
                 prompt.pending.current_text = prompt.input;
-                self.run_plugin_pipeline(&prompt.action_name, prompt.pending);
+                if Self::pending_run_needs_external_focus(&prompt.pending) {
+                    self.defer_external_execution(
+                        ctx,
+                        DeferredExecution::PluginResume {
+                            action_name: prompt.action_name,
+                            pending: prompt.pending,
+                        },
+                    );
+                } else {
+                    self.run_plugin_pipeline(&prompt.action_name, prompt.pending);
+                }
             }
         }
     }
@@ -832,7 +990,13 @@ impl QuickerApp {
             });
 
         if let Some(entry) = clicked_action {
-            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
+            self.trigger_action(
+                ui.ctx(),
+                entry.profile_idx,
+                entry.section,
+                entry.action_idx,
+                entry.action,
+            );
         }
     }
 
@@ -945,7 +1109,13 @@ impl QuickerApp {
             let entries = self.filtered_entries(&self.current_action_entries());
             if entries.len() == 1 && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let entry = entries[0].clone();
-                self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
+                self.trigger_action(
+                    ui.ctx(),
+                    entry.profile_idx,
+                    entry.section,
+                    entry.action_idx,
+                    entry.action,
+                );
                 return;
             }
 
@@ -999,7 +1169,13 @@ impl QuickerApp {
                 .cloned()
                 .or_else(|| active_window_entries.first().cloned())
                 .unwrap();
-            self.trigger_action(entry.profile_idx, entry.section, entry.action_idx, entry.action);
+            self.trigger_action(
+                ui.ctx(),
+                entry.profile_idx,
+                entry.section,
+                entry.action_idx,
+                entry.action,
+            );
             return;
         }
 
@@ -1211,7 +1387,11 @@ impl QuickerApp {
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
             }
-            ui.heading(if is_plugin_editor { "Add Plugin" } else { "Add Action" });
+            ui.heading(if is_plugin_editor {
+                "Add Plugin"
+            } else {
+                "Add Action"
+            });
         });
         ui.separator();
 
@@ -1598,6 +1778,13 @@ impl eframe::App for QuickerApp {
         if self.view == View::Panel && self.needs_focus_profile_sync {
             self.sync_profile_to_focus();
             self.needs_focus_profile_sync = false;
+        }
+        if self
+            .deferred_external_execution
+            .as_ref()
+            .is_some_and(|deferred| Instant::now() >= deferred.execute_at)
+        {
+            self.run_deferred_external_execution(ctx);
         }
         self.handle_radial_menu_input(ctx);
 

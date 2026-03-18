@@ -64,8 +64,10 @@ pub enum ActionKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TextPluginStep {
     ReadSelectedText,
+    ReadClipboardText,
     Uppercase,
     WriteSelectedText,
+    WriteClipboardText,
     PromptInput {
         #[serde(default = "default_prompt_title")]
         title: String,
@@ -261,8 +263,10 @@ impl TextPluginStep {
     pub fn label(&self) -> &'static str {
         match self {
             Self::ReadSelectedText => "Read Selected Text",
+            Self::ReadClipboardText => "Read Clipboard Text",
             Self::Uppercase => "Uppercase",
             Self::WriteSelectedText => "Write Into Selected Part",
+            Self::WriteClipboardText => "Write Clipboard Text",
             Self::PromptInput { .. } => "Prompt For Input",
         }
     }
@@ -298,6 +302,10 @@ pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutco
                 Ok(text) => pending.current_text = text,
                 Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
             },
+            TextPluginStep::ReadClipboardText => match read_explicit_clipboard_text() {
+                Ok(text) => pending.current_text = text,
+                Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
+            },
             TextPluginStep::Uppercase => {
                 pending.current_text = pending.current_text.to_uppercase();
             }
@@ -310,6 +318,12 @@ pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutco
 
                 match write_text_into_selection(&pending.current_text) {
                     Ok(()) => pending.wrote_to_selection = true,
+                    Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
+                }
+            }
+            TextPluginStep::WriteClipboardText => {
+                match write_clipboard_text(&pending.current_text) {
+                    Ok(()) => {}
                     Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
                 }
             }
@@ -334,6 +348,12 @@ pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutco
         ExecResult::OkWithMessage(
             "Plugin pipeline finished and wrote into the selected part".into(),
         )
+    } else if pending
+        .steps
+        .iter()
+        .any(|step| matches!(step, TextPluginStep::WriteClipboardText))
+    {
+        ExecResult::OkWithMessage("Plugin pipeline finished and wrote to the clipboard".into())
     } else if pending.current_text.trim().is_empty() {
         ExecResult::OkWithMessage("Plugin pipeline finished".into())
     } else {
@@ -360,8 +380,20 @@ pub fn read_selected_text() -> Result<String, String> {
         return Ok(text);
     }
 
-    Err("No selected text was found. On Linux, select text first before triggering the plugin."
-        .into())
+    Err(
+        "No selected text was found. On Linux, select text first before triggering the plugin."
+            .into(),
+    )
+}
+
+pub fn read_explicit_clipboard_text() -> Result<String, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+
+    if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
+        return Ok(text);
+    }
+
+    Err("No clipboard text was found. Copy text first before triggering the plugin.".into())
 }
 
 pub fn write_text_into_selection(text: &str) -> Result<(), String> {
@@ -1047,6 +1079,33 @@ mod tests {
     }
 
     #[test]
+    fn plugin_pipeline_reads_uppercases_and_writes_clipboard_text() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .standard_clipboard_reads
+                .push_back(Some("hello clip".into()));
+            runtime.clipboard_write_results.push_back(Ok(()));
+        });
+
+        let result = run_plugin_pipeline(&[
+            TextPluginStep::ReadClipboardText,
+            TextPluginStep::Uppercase,
+            TextPluginStep::WriteClipboardText,
+        ]);
+
+        assert_eq!(
+            result,
+            PluginRunOutcome::Complete(ExecResult::OkWithMessage(
+                "Plugin pipeline finished and wrote to the clipboard".into()
+            ))
+        );
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.clipboard_writes, vec!["HELLO CLIP"]);
+        });
+    }
+
+    #[test]
     fn read_selected_text_prefers_primary_selection_over_clipboard() {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
@@ -1061,6 +1120,23 @@ mod tests {
         let result = read_selected_text();
 
         assert_eq!(result, Ok("selected text".into()));
+    }
+
+    #[test]
+    fn read_explicit_clipboard_text_uses_standard_clipboard_only() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .standard_clipboard_reads
+                .push_back(Some("clipboard only".into()));
+            runtime
+                .primary_clipboard_reads
+                .push_back(Some("selection".into()));
+        });
+
+        let result = read_explicit_clipboard_text();
+
+        assert_eq!(result, Ok("clipboard only".into()));
     }
 
     #[test]
