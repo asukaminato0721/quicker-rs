@@ -2125,8 +2125,16 @@ impl QuickerRuntime {
                     .input_string_opt(&step.input_params, "saveName")
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| derive_download_file_name(&url));
+                let options = DownloadRequestOptions::from_inputs(
+                    self.input_string_opt(&step.input_params, "ua")
+                        .filter(|value| !value.trim().is_empty()),
+                    self.input_string_opt(&step.input_params, "header")
+                        .filter(|value| !value.trim().is_empty()),
+                    self.input_string_opt(&step.input_params, "cookie")
+                        .filter(|value| !value.trim().is_empty()),
+                );
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match download_to_file(&url, &save_path, &save_name) {
+                match download_to_file(&url, &save_path, &save_name, &options) {
                     Ok(saved_path) => {
                         self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
                         self.assign_output(
@@ -3284,53 +3292,157 @@ fn normalize_runtime_path(path: &str) -> String {
     expanded
 }
 
-fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DownloadRequestOptions {
+    user_agent: Option<String>,
+    headers: Vec<(String, String)>,
+    cookie: Option<String>,
+}
+
+impl DownloadRequestOptions {
+    fn from_inputs(
+        user_agent: Option<String>,
+        header_blob: Option<String>,
+        cookie: Option<String>,
+    ) -> Self {
+        Self {
+            user_agent,
+            headers: parse_download_headers(header_blob.as_deref()),
+            cookie,
+        }
+    }
+}
+
+fn parse_download_headers(header_blob: Option<&str>) -> Vec<(String, String)> {
+    header_blob
+        .into_iter()
+        .flat_map(|blob| blob.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            let name = name.trim();
+            let value = value.trim();
+            (!name.is_empty()).then(|| (name.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn ps_single_quote(input: &str) -> String {
+    input.replace('\'', "''")
+}
+
+fn download_to_file(
+    url: &str,
+    save_dir: &str,
+    save_name: &str,
+    options: &DownloadRequestOptions,
+) -> Result<String, String> {
     #[cfg(test)]
-    if let Some(result) = test_download_to_file(url, save_dir, save_name) {
+    if let Some(result) = test_download_to_file(url, save_dir, save_name, options) {
         return result;
     }
 
     const DOWNLOAD_CONNECT_TIMEOUT_SECS: &str = "10";
-    const DOWNLOAD_MAX_TIME_SECS: &str = "60";
+    const DOWNLOAD_MAX_TIME_SECS: &str = "180";
+    const DEFAULT_DOWNLOAD_USER_AGENT: &str =
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36";
 
     let save_dir = normalize_runtime_path(save_dir);
     fs::create_dir_all(&save_dir)
         .map_err(|err| format!("Failed to create download directory '{}': {err}", save_dir))?;
     let target = Path::new(&save_dir).join(save_name);
+    let user_agent = options
+        .user_agent
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_DOWNLOAD_USER_AGENT);
 
     #[cfg(target_os = "windows")]
-    let status = Command::new("powershell")
-        .arg("-NoProfile")
-        .arg("-Command")
-        .arg(format!(
-            "Invoke-WebRequest -Uri {:?} -OutFile {:?} -TimeoutSec {}",
-            url,
-            target.to_string_lossy().to_string(),
-            DOWNLOAD_MAX_TIME_SECS
-        ))
-        .status()
-        .map_err(|err| format!("Failed to download file: {err}"))?;
+    let status = {
+        let headers_literal = options
+            .headers
+            .iter()
+            .map(|(name, value)| format!("{}={}", ps_single_quote(name), ps_single_quote(value)))
+            .collect::<Vec<_>>()
+            .join(";");
+        let headers_clause = if headers_literal.is_empty() {
+            "$headers=@{};".to_string()
+        } else {
+            format!(
+                "$headers=@{{{}}};",
+                headers_literal
+            )
+        };
+        let cookie_clause = options
+            .cookie
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|cookie| format!("$headers['Cookie']='{}';", ps_single_quote(cookie)))
+            .unwrap_or_default();
+
+        Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "{}{}Invoke-WebRequest -Uri '{}' -OutFile '{}' -TimeoutSec {} -Headers $headers -UserAgent '{}'",
+                headers_clause,
+                cookie_clause,
+                ps_single_quote(url),
+                ps_single_quote(&target.to_string_lossy()),
+                DOWNLOAD_MAX_TIME_SECS,
+                ps_single_quote(user_agent)
+            ))
+            .status()
+            .map_err(|err| format!("Failed to download file: {err}"))?
+    };
 
     #[cfg(not(target_os = "windows"))]
     let status = if which::which("curl").is_ok() {
-        Command::new("curl")
+        let mut command = Command::new("curl");
+        command
             .arg("-L")
             .arg("-fsS")
+            .arg("--retry")
+            .arg("2")
+            .arg("--retry-delay")
+            .arg("1")
+            .arg("--retry-all-errors")
             .arg("--connect-timeout")
             .arg(DOWNLOAD_CONNECT_TIMEOUT_SECS)
             .arg("--max-time")
             .arg(DOWNLOAD_MAX_TIME_SECS)
+            .arg("--user-agent")
+            .arg(user_agent);
+        for (name, value) in &options.headers {
+            command.arg("-H").arg(format!("{name}: {value}"));
+        }
+        if let Some(cookie) = options.cookie.as_deref().filter(|value| !value.trim().is_empty()) {
+            command.arg("--cookie").arg(cookie);
+        }
+        command
             .arg(url)
             .arg("-o")
             .arg(&target)
             .status()
             .map_err(|err| format!("Failed to download file: {err}"))?
     } else if which::which("wget").is_ok() {
-        Command::new("wget")
+        let mut command = Command::new("wget");
+        command
             .arg("--timeout")
             .arg(DOWNLOAD_MAX_TIME_SECS)
             .arg("--tries")
-            .arg("1")
+            .arg("2")
+            .arg("--user-agent")
+            .arg(user_agent);
+        for (name, value) in &options.headers {
+            command.arg("--header").arg(format!("{name}: {value}"));
+        }
+        if let Some(cookie) = options.cookie.as_deref().filter(|value| !value.trim().is_empty()) {
+            command.arg("--header").arg(format!("Cookie: {cookie}"));
+        }
+        command
             .arg("-O")
             .arg(&target)
             .arg(url)
@@ -3342,6 +3454,11 @@ fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String
 
     if status.success() {
         Ok(target.to_string_lossy().to_string())
+    } else if status.code() == Some(28) {
+        Err(format!(
+            "Download timed out after {} seconds: {}",
+            DOWNLOAD_MAX_TIME_SECS, url
+        ))
     } else {
         Err(format!("Download command exited with {status}"))
     }
@@ -3696,7 +3813,7 @@ struct ActionTestRuntime {
     message_box_results: VecDeque<Result<(), String>>,
     folder_dialog_results: VecDeque<Result<String, String>>,
     input_dialog_results: VecDeque<Result<String, String>>,
-    download_calls: Vec<(String, String, String)>,
+    download_calls: Vec<(String, String, String, DownloadRequestOptions)>,
     download_results: VecDeque<Result<String, String>>,
     deleted_paths: Vec<String>,
     delete_results: VecDeque<Result<(), String>>,
@@ -3852,12 +3969,18 @@ fn test_prompt_user_input_dialog(
 }
 
 #[cfg(test)]
-fn test_download_to_file(url: &str, save_dir: &str, save_name: &str) -> Option<Result<String, String>> {
+fn test_download_to_file(
+    url: &str,
+    save_dir: &str,
+    save_name: &str,
+    options: &DownloadRequestOptions,
+) -> Option<Result<String, String>> {
     with_action_test_runtime(|runtime| {
         runtime.download_calls.push((
             url.to_string(),
             save_dir.to_string(),
             save_name.to_string(),
+            options.clone(),
         ));
     });
 
@@ -4168,7 +4291,53 @@ mod tests {
                 vec![(
                     "https://latex.vimsky.com/test.image.latex.php?fmt=png&val=x&dl=1".into(),
                     "/tmp/quicker-download".into(),
-                    "test.image.latex.php".into()
+                    "test.image.latex.php".into(),
+                    DownloadRequestOptions {
+                        user_agent: None,
+                        headers: Vec::new(),
+                        cookie: None,
+                    }
+                )]
+            );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_download_step_passes_request_options() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .download_results
+                .push_back(Ok("/tmp/quicker-download/latex.png".into()));
+        });
+
+        let sample = r#"{
+          "ActionType": 24,
+          "Title": "Download Demo",
+          "Description": "",
+          "Icon": null,
+          "Data": "{\"LimitSingleInstance\":false,\"SummaryExpression\":\"\",\"SubPrograms\":[],\"Variables\":[],\"Steps\":[{\"StepRunnerKey\":\"sys:download\",\"InputParams\":{\"url\":{\"VarKey\":null,\"Value\":\"https://latex.vimsky.com/test.image.latex.php?fmt=png&val=x&dl=1\"},\"savePath\":{\"VarKey\":null,\"Value\":\"/tmp/quicker-download\"},\"saveName\":{\"VarKey\":null,\"Value\":\"latex.png\"},\"ua\":{\"VarKey\":null,\"Value\":\"Custom UA\"},\"header\":{\"VarKey\":null,\"Value\":\"Accept: image/png\\r\\nX-Test: 1\"},\"cookie\":{\"VarKey\":null,\"Value\":\"sid=abc\"},\"stopIfFail\":{\"VarKey\":null,\"Value\":\"1\"}},\"OutputParams\":{\"isSuccess\":\"ok\",\"savedPath\":\"path\"},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0}]}"
+        }"#;
+
+        let action = Action::from_quicker_plugin_json(sample).expect("sample should parse");
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime.download_calls,
+                vec![(
+                    "https://latex.vimsky.com/test.image.latex.php?fmt=png&val=x&dl=1".into(),
+                    "/tmp/quicker-download".into(),
+                    "latex.png".into(),
+                    DownloadRequestOptions {
+                        user_agent: Some("Custom UA".into()),
+                        headers: vec![
+                            ("Accept".into(), "image/png".into()),
+                            ("X-Test".into(), "1".into()),
+                        ],
+                        cookie: Some("sid=abc".into()),
+                    }
                 )]
             );
         });
