@@ -1,4 +1,5 @@
 use fancy_regex::Regex;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -284,15 +285,13 @@ impl Action {
             ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json()?,
             _ => return Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
         };
-        let document: QuickerActionDocument = serde_json::from_str(&quicker_json)
-            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        let document = parse_quicker_action_document(&quicker_json)?;
         serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
-        let document: QuickerActionDocument = serde_json::from_str(input)
-            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        let document = parse_quicker_action_document(input)?;
 
         match document.action_type {
             QUICKER_KEYS_ACTION_TYPE => {
@@ -448,8 +447,7 @@ impl Action {
 
 impl LowCodePluginDraft {
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
-        let document: QuickerActionDocument = serde_json::from_str(input)
-            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        let document = parse_quicker_action_document(input)?;
 
         match document.action_type {
             QUICKER_KEYS_ACTION_TYPE => {
@@ -1136,8 +1134,7 @@ impl LowCodeKeyMacroStep {
 
 impl PluginPipelineStorage {
     fn to_quicker_json(&self) -> Result<String, String> {
-        let document: QuickerActionDocument = serde_json::from_str(&self.quicker_json)
-            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        let document = parse_quicker_action_document(&self.quicker_json)?;
         serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
@@ -1228,8 +1225,7 @@ impl QuickerActionDocument {
     }
 
     fn data_payload(&self) -> Result<QuickerPluginData, String> {
-        serde_json::from_str(self.data_text())
-            .map_err(|err| format!("Failed to parse Quicker plugin data payload: {err}"))
+        parse_json_lenient(self.data_text(), "Failed to parse Quicker plugin data payload")
     }
 
     fn launch_payload(&self) -> Result<QuickerLaunchData, String> {
@@ -1237,8 +1233,7 @@ impl QuickerActionDocument {
             .data_text()
             .strip_prefix("json:")
             .unwrap_or(self.data_text());
-        serde_json::from_str(payload)
-            .map_err(|err| format!("Failed to parse Quicker launcher payload: {err}"))
+        parse_json_lenient(payload, "Failed to parse Quicker launcher payload")
     }
 }
 
@@ -2242,10 +2237,10 @@ impl QuickerRuntime {
 }
 
 fn execute_quicker_action_document(quicker_json: &str) -> ExecResult {
-    let document: QuickerActionDocument = match serde_json::from_str(quicker_json) {
+    let document = match parse_quicker_action_document(quicker_json) {
         Ok(document) => document,
         Err(err) => {
-            return ExecResult::Err(format!("Failed to parse Quicker plugin JSON: {err}"));
+            return ExecResult::Err(err);
         }
     };
 
@@ -2858,6 +2853,64 @@ fn sleep_millis(delay_ms: u64) {
     thread::sleep(Duration::from_millis(delay_ms));
 }
 
+fn parse_quicker_action_document(input: &str) -> Result<QuickerActionDocument, String> {
+    parse_json_lenient(input, "Failed to parse Quicker plugin JSON")
+}
+
+fn parse_json_lenient<T: DeserializeOwned>(input: &str, context: &str) -> Result<T, String> {
+    let trimmed = input.trim_start_matches('\u{feff}');
+    match serde_json::from_str(trimmed) {
+        Ok(value) => Ok(value),
+        Err(_) => {
+            let sanitized = sanitize_json_control_chars(trimmed);
+            serde_json::from_str(&sanitized).map_err(|err| format!("{context}: {err}"))
+        }
+    }
+}
+
+fn sanitize_json_control_chars(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if in_string {
+            if escaped {
+                output.push(ch);
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' => {
+                    output.push(ch);
+                    escaped = true;
+                }
+                '"' => {
+                    output.push(ch);
+                    in_string = false;
+                }
+                '\n' => output.push_str("\\n"),
+                '\r' => output.push_str("\\r"),
+                '\t' => output.push_str("\\t"),
+                ch if ch.is_control() => {
+                    use std::fmt::Write as _;
+                    let _ = write!(output, "\\u{:04x}", ch as u32);
+                }
+                _ => output.push(ch),
+            }
+        } else {
+            if ch == '"' {
+                in_string = true;
+            }
+            output.push(ch);
+        }
+    }
+
+    output
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpawnCall {
@@ -3267,6 +3320,26 @@ mod tests {
             .steps
             .iter()
             .any(|step| matches!(step, LowCodePluginStep::ImageToBase64 { .. })));
+    }
+
+    #[test]
+    fn quicker_json_parser_accepts_raw_control_chars_inside_strings() {
+        let broken = "{\n  \"ActionType\": 7,\n  \"Title\": \"Demo\",\n  \"Description\": \"\",\n  \"Data\": \"line1\nline2\ttext\",\n  \"Icon\": null\n}";
+
+        let action = Action::from_quicker_plugin_json(broken).expect("parser should sanitize");
+
+        assert_eq!(action.name, "Demo");
+    }
+
+    #[test]
+    fn quicker_plugin_data_parser_accepts_raw_control_chars_inside_inner_json() {
+        let broken = "{\n  \"ActionType\": 24,\n  \"Title\": \"Demo\",\n  \"Description\": \"\",\n  \"Icon\": null,\n  \"Data\": \"{\\\"LimitSingleInstance\\\":false,\\\"SummaryExpression\\\":\\\"\\\",\\\"SubPrograms\\\":[],\\\"Variables\\\":[{\\\"Key\\\":\\\"html\\\",\\\"Type\\\":0,\\\"DefaultValue\\\":\\\"line1\nline2\\\",\\\"SaveState\\\":false}],\\\"Steps\\\":[]}\" \n}";
+
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(broken).expect("inner parser should sanitize");
+
+        assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
+        assert_eq!(draft.title, "Demo");
     }
 
     #[test]
