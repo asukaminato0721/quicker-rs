@@ -2121,7 +2121,10 @@ impl QuickerRuntime {
             "sys:download" => {
                 let url = self.input_string(&step.input_params, "url")?;
                 let save_path = self.input_string(&step.input_params, "savePath")?;
-                let save_name = self.input_string(&step.input_params, "saveName")?;
+                let save_name = self
+                    .input_string_opt(&step.input_params, "saveName")
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| derive_download_file_name(&url));
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
                 match download_to_file(&url, &save_path, &save_name) {
                     Ok(saved_path) => {
@@ -3440,6 +3443,25 @@ fn delete_file_path(path: &str) -> Result<(), String> {
         .map_err(|err| format!("Failed to delete file '{}': {err}", normalized))
 }
 
+fn derive_download_file_name(url: &str) -> String {
+    let trimmed = url.trim();
+    let without_query = trimmed
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    let candidate = without_query
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download.bin");
+    if candidate.contains('.') {
+        candidate.to_string()
+    } else {
+        format!("{candidate}.bin")
+    }
+}
+
 fn normalize_clipboard_text(text: Option<String>) -> Option<String> {
     let trimmed = text?.trim().to_string();
     if trimmed.is_empty() {
@@ -4104,6 +4126,39 @@ mod tests {
             );
             assert_eq!(runtime.clipboard_html_writes.len(), 1);
             assert_eq!(runtime.key_calls, vec![(vec!["ctrl".into()], "v".into())]);
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_download_step_allows_missing_save_name() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime
+                .download_results
+                .push_back(Ok("/tmp/quicker-download/test.image.latex.php.bin".into()));
+        });
+
+        let sample = r#"{
+          "ActionType": 24,
+          "Title": "Download Demo",
+          "Description": "",
+          "Icon": null,
+          "Data": "{\"LimitSingleInstance\":false,\"SummaryExpression\":\"\",\"SubPrograms\":[],\"Variables\":[],\"Steps\":[{\"StepRunnerKey\":\"sys:download\",\"InputParams\":{\"url\":{\"VarKey\":null,\"Value\":\"https://latex.vimsky.com/test.image.latex.php?fmt=png&val=x&dl=1\"},\"savePath\":{\"VarKey\":null,\"Value\":\"/tmp/quicker-download\"},\"stopIfFail\":{\"VarKey\":null,\"Value\":\"1\"}},\"OutputParams\":{\"isSuccess\":\"ok\",\"savedPath\":\"path\"},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0}]}"
+        }"#;
+
+        let action = Action::from_quicker_plugin_json(sample).expect("sample should parse");
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime.download_calls,
+                vec![(
+                    "https://latex.vimsky.com/test.image.latex.php?fmt=png&val=x&dl=1".into(),
+                    "/tmp/quicker-download".into(),
+                    "test.image.latex.php".into()
+                )]
+            );
         });
     }
 
