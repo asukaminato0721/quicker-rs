@@ -133,15 +133,8 @@ pub struct QuickerApp {
     panel_hidden: bool,
     startup_notice: Option<(String, bool)>,
 
-    // Action editor state
-    edit_name: String,
-    edit_desc: String,
-    edit_icon: String,
-    edit_tags: String,
-    edit_kind_idx: usize,
-    edit_field1: String, // command / path / url / script / text / template
-    edit_field2: String, // args / shell / fallback url
-    edit_field3: String, // working_dir
+    // Plugin editor state
+    edit_field1: String, // raw Quicker JSON
     plugin_draft: LowCodePluginDraft,
     plugin_editor_mode: PluginEditorMode,
     plugin_new_key_macro_step_idx: usize,
@@ -188,14 +181,7 @@ impl QuickerApp {
             radial_menu: None,
             panel_hidden: false,
             startup_notice,
-            edit_name: String::new(),
-            edit_desc: String::new(),
-            edit_icon: String::new(),
-            edit_tags: String::new(),
-            edit_kind_idx: 0,
             edit_field1: String::new(),
-            edit_field2: String::new(),
-            edit_field3: String::new(),
             plugin_draft: LowCodePluginDraft::default(),
             plugin_editor_mode: PluginEditorMode::LowCode,
             plugin_new_key_macro_step_idx: 0,
@@ -324,14 +310,7 @@ impl QuickerApp {
     }
 
     fn reset_editor(&mut self) {
-        self.edit_name.clear();
-        self.edit_desc.clear();
-        self.edit_icon.clear();
-        self.edit_tags.clear();
-        self.edit_kind_idx = 0;
         self.edit_field1.clear();
-        self.edit_field2.clear();
-        self.edit_field3.clear();
         self.plugin_draft = LowCodePluginDraft::default();
         self.plugin_editor_mode = PluginEditorMode::LowCode;
         self.plugin_new_key_macro_step_idx = 0;
@@ -485,7 +464,6 @@ impl QuickerApp {
         };
 
         self.reset_editor();
-        self.edit_kind_idx = 10;
         self.edit_field1 = plugin.quicker_json.clone();
         match LowCodePluginDraft::from_quicker_plugin_json(&plugin.quicker_json) {
             Ok(draft) => {
@@ -518,12 +496,12 @@ impl QuickerApp {
                 return;
             }
             self.edit_target = None;
-            "Action updated!"
+            "Plugin updated!"
         } else {
             if let Some(actions) = self.current_actions_mut() {
                 actions.push(action);
             }
-            "Action added!"
+            "Plugin added!"
         };
 
         self.config.save();
@@ -1981,7 +1959,7 @@ impl QuickerApp {
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.view = View::Settings;
                 }
-                if ui.button("＋").on_hover_text("Add action").clicked() {
+                if ui.button("＋").on_hover_text("Add plugin").clicked() {
                     self.reset_editor();
                     self.view = View::ActionEditor;
                 }
@@ -2298,20 +2276,16 @@ impl QuickerApp {
     }
 
     fn render_action_editor(&mut self, ui: &mut egui::Ui) {
-        let is_plugin_editor = self.edit_kind_idx == 10;
-
         ui.horizontal(|ui| {
             if ui.button("← Cancel").clicked() {
                 self.edit_target = None;
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
             }
-            ui.heading(if is_plugin_editor && self.edit_target.is_some() {
+            ui.heading(if self.edit_target.is_some() {
                 "Edit Plugin"
-            } else if is_plugin_editor {
-                "Add Plugin"
             } else {
-                "Add Action"
+                "Add Plugin"
             });
         });
         ui.separator();
@@ -2319,229 +2293,42 @@ impl QuickerApp {
         egui::ScrollArea::vertical()
             .id_salt("action_editor_scroll")
             .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}: {}",
-                    if self.edit_target.is_some() {
-                        "Editing in"
-                    } else {
-                        "Adding into"
-                    },
-                    self.add_action_target_label()
-                ))
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}: {}",
+                        if self.edit_target.is_some() {
+                            "Editing in"
+                        } else {
+                            "Adding into"
+                        },
+                        self.add_action_target_label()
+                    ))
                     .weak()
                     .small(),
-            );
-            ui.add_space(8.0);
+                );
+                ui.add_space(8.0);
 
-            if !is_plugin_editor {
-                ui.label("Name:");
-                ui.text_edit_singleline(&mut self.edit_name);
+                self.render_plugin_json_editor(ui);
 
-                ui.label("Description:");
-                ui.text_edit_singleline(&mut self.edit_desc);
+                ui.add_space(16.0);
 
-                ui.label("Icon (emoji):");
-                ui.text_edit_singleline(&mut self.edit_icon);
+                if ui.button("✓ Save Plugin").clicked() {
+                    let action_result = match self.plugin_editor_mode {
+                        PluginEditorMode::LowCode => self.plugin_draft.to_action(),
+                        PluginEditorMode::RawJson { .. } => {
+                            Action::from_quicker_plugin_json(&self.edit_field1)
+                        }
+                    };
+                    let action = match action_result {
+                        Ok(action) => action,
+                        Err(err) => {
+                            self.show_toast(err, true);
+                            return;
+                        }
+                    };
 
-                ui.label("Tags (comma-separated):");
-                ui.text_edit_singleline(&mut self.edit_tags);
-            }
-
-            ui.add_space(8.0);
-            ui.label(if is_plugin_editor { "Item Type:" } else { "Action Type:" });
-
-            let kinds = [
-                "Run Program",
-                "Open File",
-                "Open URL",
-                "Run Shell Script",
-                "Copy Text",
-                "Open Folder",
-                "Group",
-                "Search Clipboard Text",
-                "Open Clipboard Text",
-                "Run Clipboard Text",
-                "Plugin",
-            ];
-            egui::ComboBox::from_id_salt("action_kind")
-                .selected_text(kinds[self.edit_kind_idx])
-                .show_ui(ui, |ui| {
-                    for (i, kind) in kinds.iter().enumerate() {
-                        ui.selectable_value(&mut self.edit_kind_idx, i, *kind);
-                    }
-                });
-
-            ui.add_space(8.0);
-
-            match self.edit_kind_idx {
-                0 => {
-                    ui.label("Command / executable path:");
-                    ui.text_edit_singleline(&mut self.edit_field1);
-                    ui.label("Arguments (space-separated):");
-                    ui.text_edit_singleline(&mut self.edit_field2);
-                    ui.label("Working directory (optional):");
-                    ui.text_edit_singleline(&mut self.edit_field3);
+                    self.persist_edited_or_new_action(action);
                 }
-                1 => {
-                    ui.label("File path:");
-                    ui.text_edit_singleline(&mut self.edit_field1);
-                }
-                2 => {
-                    ui.label("URL:");
-                    ui.text_edit_singleline(&mut self.edit_field1);
-                }
-                3 => {
-                    ui.label("Shell (sh, bash, powershell, cmd):");
-                    ui.text_edit_singleline(&mut self.edit_field2);
-                    ui.label("Script:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.edit_field1)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(6)
-                            .code_editor(),
-                    );
-                }
-                4 => {
-                    ui.label("Text to copy:");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.edit_field1)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(4),
-                    );
-                }
-                5 => {
-                    ui.label("Folder path:");
-                    ui.text_edit_singleline(&mut self.edit_field1);
-                }
-                6 => {
-                    ui.label("Creates an empty group. Open it from the panel and add child actions inside it.");
-                }
-                7 => {
-                    ui.label("Search URL template:");
-                    ui.text_edit_singleline(&mut self.edit_field1);
-                    ui.label("Use {query} where clipboard text should be inserted.");
-                }
-                8 => {
-                    ui.label("Fallback search URL template (optional):");
-                    ui.text_edit_singleline(&mut self.edit_field2);
-                    ui.label("If clipboard is not a URL/path, use {query} in this template to search it.");
-                }
-                9 => {
-                    ui.label("Shell (sh, bash, powershell, cmd):");
-                    ui.text_edit_singleline(&mut self.edit_field2);
-                    ui.label("Runs the current clipboard text as a command.");
-                }
-                10 => {
-                    self.render_plugin_json_editor(ui);
-                }
-                _ => {}
-            }
-
-            ui.add_space(16.0);
-
-            if ui.button("✓ Save Action").clicked() {
-                let kind = match self.edit_kind_idx {
-                    0 => ActionKind::RunProgram {
-                        command: self.edit_field1.clone(),
-                        args: self
-                            .edit_field2
-                            .split_whitespace()
-                            .map(String::from)
-                            .collect(),
-                        working_dir: if self.edit_field3.is_empty() {
-                            None
-                        } else {
-                            Some(self.edit_field3.clone())
-                        },
-                    },
-                    1 => ActionKind::OpenFile {
-                        path: self.edit_field1.clone(),
-                    },
-                    2 => ActionKind::OpenUrl {
-                        url: self.edit_field1.clone(),
-                    },
-                    3 => ActionKind::RunShell {
-                        script: self.edit_field1.clone(),
-                        shell: if self.edit_field2.is_empty() {
-                            "sh".into()
-                        } else {
-                            self.edit_field2.clone()
-                        },
-                    },
-                    4 => ActionKind::CopyText {
-                        text: self.edit_field1.clone(),
-                    },
-                    5 => ActionKind::OpenFolder {
-                        path: self.edit_field1.clone(),
-                    },
-                    6 => ActionKind::Group { actions: vec![] },
-                    7 => ActionKind::SearchClipboardText {
-                        url_template: if self.edit_field1.is_empty() {
-                            "https://www.google.com/search?q={query}".into()
-                        } else {
-                            self.edit_field1.clone()
-                        },
-                    },
-                    8 => ActionKind::OpenClipboardText {
-                        fallback_search_url: if self.edit_field2.is_empty() {
-                            Some("https://www.google.com/search?q={query}".into())
-                        } else {
-                            Some(self.edit_field2.clone())
-                        },
-                    },
-                    9 => ActionKind::RunClipboardText {
-                        shell: if self.edit_field2.is_empty() {
-                            "sh".into()
-                        } else {
-                            self.edit_field2.clone()
-                        },
-                    },
-                    10 => {
-                        let action_result = match self.plugin_editor_mode {
-                            PluginEditorMode::LowCode => self.plugin_draft.to_action(),
-                            PluginEditorMode::RawJson { .. } => {
-                                Action::from_quicker_plugin_json(&self.edit_field1)
-                            }
-                        };
-                        let action = match action_result {
-                            Ok(action) => action,
-                            Err(err) => {
-                                self.show_toast(err, true);
-                                return;
-                            }
-                        };
-                        self.persist_edited_or_new_action(action);
-                        return;
-                    }
-                    _ => unreachable!(),
-                };
-
-                if self.edit_name.is_empty() {
-                    self.show_toast("Name is required.".into(), true);
-                    return;
-                }
-
-                let action = Action {
-                    name: self.edit_name.clone(),
-                    description: self.edit_desc.clone(),
-                    icon: if self.edit_icon.is_empty() {
-                        None
-                    } else {
-                        Some(self.edit_icon.clone())
-                    },
-                    tags: self
-                        .edit_tags
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect(),
-                    hotkey: None,
-                    kind,
-                };
-
-                self.persist_edited_or_new_action(action);
-            }
             });
     }
 
