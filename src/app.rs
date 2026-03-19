@@ -1,6 +1,6 @@
 use crate::action::{
-    Action, ActionKind, ExecResult, LowCodeClipboardFormat, LowCodePluginDraft,
-    LowCodePluginKind, LowCodePluginStep, LowCodeStringProcessMethod,
+    Action, ActionKind, ExecResult, LowCodeClipboardFormat, LowCodeKeyMacroStep,
+    LowCodePluginDraft, LowCodePluginKind, LowCodePluginStep, LowCodeStringProcessMethod,
     LowCodeWriteClipboardKind,
 };
 use crate::config::Config;
@@ -124,6 +124,7 @@ pub struct QuickerApp {
     edit_field2: String, // args / shell / fallback url
     edit_field3: String, // working_dir
     plugin_draft: LowCodePluginDraft,
+    plugin_new_key_macro_step_idx: usize,
     plugin_new_step_idx: usize,
     edit_target: Option<ActionEditTarget>,
 }
@@ -173,6 +174,7 @@ impl QuickerApp {
             edit_field2: String::new(),
             edit_field3: String::new(),
             plugin_draft: LowCodePluginDraft::default(),
+            plugin_new_key_macro_step_idx: 0,
             plugin_new_step_idx: 0,
             edit_target: None,
         }
@@ -271,6 +273,7 @@ impl QuickerApp {
         self.edit_field2.clear();
         self.edit_field3.clear();
         self.plugin_draft = LowCodePluginDraft::default();
+        self.plugin_new_key_macro_step_idx = 0;
         self.plugin_new_step_idx = 0;
         self.edit_target = None;
     }
@@ -686,6 +689,27 @@ impl QuickerApp {
         ]
     }
 
+    fn key_macro_step_kind_labels() -> [&'static str; 3] {
+        ["Send Keys", "Type Text", "Delay"]
+    }
+
+    fn make_key_macro_step(kind_idx: usize) -> LowCodeKeyMacroStep {
+        match kind_idx {
+            0 => LowCodeKeyMacroStep::SendKeys {
+                modifiers: "ctrl".into(),
+                key: "C".into(),
+            },
+            1 => LowCodeKeyMacroStep::TypeText {
+                text: "example".into(),
+            },
+            2 => LowCodeKeyMacroStep::Delay { delay_ms: 100 },
+            _ => LowCodeKeyMacroStep::SendKeys {
+                modifiers: "ctrl".into(),
+                key: "C".into(),
+            },
+        }
+    }
+
     fn make_plugin_step(kind_idx: usize) -> LowCodePluginStep {
         match kind_idx {
             0 => LowCodePluginStep::OpenUrl {
@@ -751,6 +775,54 @@ impl QuickerApp {
                 message: "Done".into(),
             },
         }
+    }
+
+    fn render_key_macro_step_card(
+        ui: &mut egui::Ui,
+        index: usize,
+        step: &mut LowCodeKeyMacroStep,
+    ) -> bool {
+        let mut remove = false;
+
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                    ui.label(
+                        egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
+                            .strong(),
+                    );
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui.small_button("Delete").clicked() {
+                                remove = true;
+                            }
+                        },
+                    );
+                });
+                ui.add_space(6.0);
+
+                match step {
+                    LowCodeKeyMacroStep::SendKeys { modifiers, key } => {
+                        ui.label("Modifiers (ctrl+shift style):");
+                        ui.text_edit_singleline(modifiers);
+                        ui.label("Key:");
+                        ui.text_edit_singleline(key);
+                    }
+                    LowCodeKeyMacroStep::TypeText { text } => {
+                        ui.label("Text:");
+                        ui.text_edit_singleline(text);
+                    }
+                    LowCodeKeyMacroStep::Delay { delay_ms } => {
+                        ui.label("Delay (ms):");
+                        ui.add(egui::DragValue::new(delay_ms).range(0..=60_000).speed(10));
+                    }
+                }
+            });
+
+        remove
     }
 
     fn render_plugin_step_card(ui: &mut egui::Ui, index: usize, step: &mut LowCodePluginStep) -> bool {
@@ -1013,17 +1085,96 @@ impl QuickerApp {
                 ui.label(egui::RichText::new("Key Macro").strong());
                 ui.label(
                     egui::RichText::new(
-                        "填写 Quicker 的宏脚本内容，例如 `@MENU+VK_C`、`;300`、`%text` 这样的行。",
+                        "Build the macro with structured steps. The visual editor currently supports the runtime subset: Send Keys, Type Text, and Delay.",
                     )
                     .weak()
                     .small(),
                 );
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.plugin_draft.key_macro_script)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(8)
-                        .code_editor(),
-                );
+                ui.add_space(6.0);
+
+                let labels = Self::key_macro_step_kind_labels();
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("key_macro_new_step_kind")
+                        .selected_text(labels[self.plugin_new_key_macro_step_idx])
+                        .show_ui(ui, |ui| {
+                            for (idx, label) in labels.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut self.plugin_new_key_macro_step_idx,
+                                    idx,
+                                    *label,
+                                );
+                            }
+                        });
+
+                    if ui.button("Add Step").clicked() {
+                        self.plugin_draft.key_macro_steps.push(Self::make_key_macro_step(
+                            self.plugin_new_key_macro_step_idx,
+                        ));
+                    }
+                });
+
+                ui.add_space(8.0);
+                let mut remove_idx = None;
+                let mut move_request = None;
+                let drop_frame = egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+
+                if self.plugin_draft.key_macro_steps.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No macro steps yet. Add one from the palette above.")
+                            .weak(),
+                    );
+                } else {
+                    for insert_idx in 0..=self.plugin_draft.key_macro_steps.len() {
+                        let (_, dropped) =
+                            ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new("Drop step here").weak().small());
+                                });
+                            });
+                        if let Some(payload) = dropped {
+                            move_request = Some((payload.from, insert_idx));
+                        }
+
+                        if insert_idx == self.plugin_draft.key_macro_steps.len() {
+                            break;
+                        }
+
+                        let response = ui.dnd_drag_source(
+                            egui::Id::new(("key_macro_step", insert_idx)),
+                            StepDragPayload { from: insert_idx },
+                            |ui| {
+                                Self::render_key_macro_step_card(
+                                    ui,
+                                    insert_idx,
+                                    &mut self.plugin_draft.key_macro_steps[insert_idx],
+                                )
+                            },
+                        );
+                        if response.inner {
+                            remove_idx = Some(insert_idx);
+                        }
+                        ui.add_space(4.0);
+                    }
+                }
+
+                if let Some((from, mut to)) = move_request {
+                    if from < self.plugin_draft.key_macro_steps.len() {
+                        if from < to {
+                            to -= 1;
+                        }
+                        if from != to && to <= self.plugin_draft.key_macro_steps.len() {
+                            let step = self.plugin_draft.key_macro_steps.remove(from);
+                            self.plugin_draft.key_macro_steps.insert(to, step);
+                        }
+                    }
+                }
+                if let Some(idx) = remove_idx {
+                    if idx < self.plugin_draft.key_macro_steps.len() {
+                        self.plugin_draft.key_macro_steps.remove(idx);
+                    }
+                }
             }
             LowCodePluginKind::OpenApp => {
                 ui.label(egui::RichText::new("Open App / File").strong());

@@ -79,7 +79,7 @@ pub struct LowCodePluginDraft {
     pub title: String,
     pub description: String,
     pub icon: Option<String>,
-    pub key_macro_script: String,
+    pub key_macro_steps: Vec<LowCodeKeyMacroStep>,
     pub launch_path: String,
     pub launch_arguments: String,
     pub launch_set_working_dir: bool,
@@ -93,7 +93,7 @@ impl Default for LowCodePluginDraft {
             title: String::new(),
             description: String::new(),
             icon: None,
-            key_macro_script: String::new(),
+            key_macro_steps: Vec::new(),
             launch_path: String::new(),
             launch_arguments: String::new(),
             launch_set_working_dir: false,
@@ -107,6 +107,13 @@ pub enum LowCodePluginKind {
     KeyMacro,
     OpenApp,
     PluginFlow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LowCodeKeyMacroStep {
+    SendKeys { modifiers: String, key: String },
+    TypeText { text: String },
+    Delay { delay_ms: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,13 +401,13 @@ impl LowCodePluginDraft {
 
         match document.action_type {
             QUICKER_KEYS_ACTION_TYPE => {
-                let key_macro_script = document.data_text().to_string();
+                let key_macro_steps = parse_quicker_key_macro_script(document.data_text())?;
                 Ok(Self {
                     kind: LowCodePluginKind::KeyMacro,
                     title: document.title,
                     description: document.description,
                     icon: document.icon,
-                    key_macro_script,
+                    key_macro_steps,
                     launch_path: String::new(),
                     launch_arguments: String::new(),
                     launch_set_working_dir: false,
@@ -414,7 +421,7 @@ impl LowCodePluginDraft {
                     title: document.title,
                     description: document.description,
                     icon: document.icon,
-                    key_macro_script: String::new(),
+                    key_macro_steps: Vec::new(),
                     launch_path: launch.file_name,
                     launch_arguments: launch.arguments,
                     launch_set_working_dir: launch.set_working_dir,
@@ -560,7 +567,7 @@ impl LowCodePluginDraft {
                     title: document.title,
                     description: document.description,
                     icon: document.icon,
-                    key_macro_script: String::new(),
+                    key_macro_steps: Vec::new(),
                     launch_path: String::new(),
                     launch_arguments: String::new(),
                     launch_set_working_dir: false,
@@ -584,7 +591,7 @@ impl LowCodePluginDraft {
                 icon: self.icon.clone(),
                 path: None,
                 delay_ms: Some(0),
-                data: Some(self.key_macro_script.clone()),
+                data: Some(serialize_quicker_key_macro_steps(&self.key_macro_steps)?),
                 data2: None,
                 data3: None,
                 children: None,
@@ -805,7 +812,7 @@ impl LowCodePluginStep {
                 map_with_binding([(
                     "keys",
                     &serde_json::to_string(&QuickerKeyInput {
-                        ctrl_keys: parse_low_code_modifiers(modifiers),
+                        ctrl_keys: parse_low_code_modifiers(modifiers)?,
                         keys: vec![parse_low_code_key(key)?],
                     })
                     .map_err(|err| format!("Failed to serialize keyInput payload: {err}"))?,
@@ -986,6 +993,16 @@ impl LowCodePluginStep {
                 );
                 Ok(step_document("sys:outputText", input_params, Map::new()))
             }
+        }
+    }
+}
+
+impl LowCodeKeyMacroStep {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::SendKeys { .. } => "Send Keys",
+            Self::TypeText { .. } => "Type Text",
+            Self::Delay { .. } => "Delay",
         }
     }
 }
@@ -1311,25 +1328,30 @@ fn track_variable_name(variable_names: &mut BTreeSet<String>, name: &str) {
     }
 }
 
-fn parse_low_code_modifiers(value: &str) -> Vec<u32> {
+fn parse_low_code_modifiers(value: &str) -> Result<Vec<u32>, String> {
     value
         .split(['+', ',', ' '])
         .map(str::trim)
         .filter(|token| !token.is_empty())
-        .filter_map(|token| match token.to_ascii_lowercase().as_str() {
-            "shift" => Some(160),
-            "ctrl" | "control" => Some(162),
-            "alt" => Some(164),
-            "super" | "win" | "meta" => Some(91),
-            _ => None,
+        .map(|token| {
+            match token.to_ascii_lowercase().as_str() {
+                "shift" => Ok(160),
+                "ctrl" | "control" => Ok(162),
+                "alt" => Ok(164),
+                "super" | "win" | "meta" => Ok(91),
+                _ => Err(format!("Unsupported low-code modifier: {token}")),
+            }
         })
         .collect()
 }
 
 fn parse_low_code_key(value: &str) -> Result<u32, String> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "backspace" | "back" => Ok(8),
+        "tab" => Ok(9),
         "return" | "enter" => Ok(13),
         "escape" | "esc" => Ok(27),
+        "space" => Ok(32),
         "left" => Ok(37),
         "up" => Ok(38),
         "right" => Ok(39),
@@ -1360,8 +1382,11 @@ fn low_code_modifier_name(code: u32) -> Option<String> {
 
 fn low_code_key_name(code: u32) -> Option<String> {
     Some(match code {
+        8 => "Backspace".into(),
+        9 => "Tab".into(),
         13 => "Return".into(),
         27 => "Escape".into(),
+        32 => "Space".into(),
         37 => "Left".into(),
         38 => "Up".into(),
         39 => "Right".into(),
@@ -1369,6 +1394,126 @@ fn low_code_key_name(code: u32) -> Option<String> {
         48..=57 | 65..=90 => char::from_u32(code)?.to_string(),
         _ => return None,
     })
+}
+
+fn low_code_modifier_macro_token(code: u32) -> Option<&'static str> {
+    match code {
+        16 | 160 | 161 => Some("SHIFT"),
+        17 | 162 | 163 => Some("CTRL"),
+        18 | 164 | 165 => Some("ALT"),
+        91 | 92 => Some("WIN"),
+        _ => None,
+    }
+}
+
+fn low_code_key_macro_token(code: u32) -> Option<String> {
+    Some(match code {
+        8 => "BACK".into(),
+        9 => "TAB".into(),
+        13 => "RETURN".into(),
+        27 => "ESC".into(),
+        32 => "SPACE".into(),
+        37 => "LEFT".into(),
+        38 => "UP".into(),
+        39 => "RIGHT".into(),
+        40 => "DOWN".into(),
+        48..=57 | 65..=90 => format!("VK_{}", char::from_u32(code)?.to_ascii_uppercase()),
+        _ => return None,
+    })
+}
+
+fn parse_quicker_key_macro_script(script: &str) -> Result<Vec<LowCodeKeyMacroStep>, String> {
+    let mut steps = Vec::new();
+
+    for (idx, raw_line) in script.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(delay) = line.strip_prefix(';') {
+            let delay_ms = delay
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| format!("Invalid macro delay on line {}: {line}", idx + 1))?;
+            steps.push(LowCodeKeyMacroStep::Delay { delay_ms });
+            continue;
+        }
+
+        if let Some(text) = line.strip_prefix('%') {
+            steps.push(LowCodeKeyMacroStep::TypeText {
+                text: text.to_string(),
+            });
+            continue;
+        }
+
+        if let Some(keys) = line.strip_prefix('@') {
+            let mut modifiers = Vec::new();
+            let mut key = None;
+
+            for token in keys.split('+').map(str::trim).filter(|token| !token.is_empty()) {
+                if let Some(modifier) = quicker_macro_modifier_label(token) {
+                    modifiers.push(modifier.to_string());
+                    continue;
+                }
+                if let Some(label) = quicker_macro_key_label(token) {
+                    if key.replace(label).is_some() {
+                        return Err(format!(
+                            "Multiple macro keys on line {} are not supported by the visual editor: {line}",
+                            idx + 1
+                        ));
+                    }
+                    continue;
+                }
+                return Err(format!(
+                    "Unsupported macro token on line {}: {token}",
+                    idx + 1
+                ));
+            }
+
+            let Some(key) = key else {
+                return Err(format!("Missing macro key on line {}: {line}", idx + 1));
+            };
+
+            steps.push(LowCodeKeyMacroStep::SendKeys {
+                modifiers: modifiers.join("+"),
+                key,
+            });
+            continue;
+        }
+
+        return Err(format!(
+            "Unsupported macro instruction on line {}: {line}",
+            idx + 1
+        ));
+    }
+
+    Ok(steps)
+}
+
+fn serialize_quicker_key_macro_steps(steps: &[LowCodeKeyMacroStep]) -> Result<String, String> {
+    let mut lines = Vec::with_capacity(steps.len());
+
+    for step in steps {
+        match step {
+            LowCodeKeyMacroStep::Delay { delay_ms } => lines.push(format!(";{delay_ms}")),
+            LowCodeKeyMacroStep::TypeText { text } => lines.push(format!("%{text}")),
+            LowCodeKeyMacroStep::SendKeys { modifiers, key } => {
+                let mut tokens = parse_low_code_modifiers(modifiers)?
+                    .into_iter()
+                    .filter_map(low_code_modifier_macro_token)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let key_code = parse_low_code_key(key)?;
+                let key_token = low_code_key_macro_token(key_code)
+                    .ok_or_else(|| format!("Unsupported key macro key: {key}"))?;
+                tokens.push(key_token);
+                lines.push(format!("@{}", tokens.join("+")));
+            }
+        }
+    }
+
+    Ok(lines.join("\n"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2032,6 +2177,16 @@ fn quicker_macro_modifier(token: &str) -> Option<&'static str> {
     }
 }
 
+fn quicker_macro_modifier_label(token: &str) -> Option<&'static str> {
+    match quicker_macro_modifier(token)? {
+        "alt" => Some("alt"),
+        "ctrl" => Some("ctrl"),
+        "shift" => Some("shift"),
+        "super" => Some("super"),
+        _ => None,
+    }
+}
+
 fn quicker_macro_key(token: &str) -> Option<&'static str> {
     match token {
         "RETURN" => Some("Return"),
@@ -2047,6 +2202,15 @@ fn quicker_macro_key(token: &str) -> Option<&'static str> {
             .strip_prefix("VK_")
             .and_then(macro_virtual_key_name),
     }
+}
+
+fn quicker_macro_key_label(token: &str) -> Option<String> {
+    Some(match quicker_macro_key(token)? {
+        "space" => "Space".into(),
+        "BackSpace" => "Backspace".into(),
+        key if key.len() == 1 => key.to_ascii_uppercase(),
+        key => key.to_string(),
+    })
 }
 
 fn macro_virtual_key_name(token: &str) -> Option<&'static str> {
@@ -2712,7 +2876,7 @@ mod tests {
             title: "Docs".into(),
             description: "open docs".into(),
             icon: Some("fa:Light_Keyboard".into()),
-            key_macro_script: String::new(),
+            key_macro_steps: Vec::new(),
             launch_path: String::new(),
             launch_arguments: String::new(),
             launch_set_working_dir: false,
@@ -2738,7 +2902,13 @@ mod tests {
         .expect("key macro should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::KeyMacro);
-        assert_eq!(draft.key_macro_script, "@MENU+VK_C");
+        assert_eq!(
+            draft.key_macro_steps,
+            vec![LowCodeKeyMacroStep::SendKeys {
+                modifiers: "alt".into(),
+                key: "C".into(),
+            }]
+        );
     }
 
     #[test]
@@ -2753,6 +2923,46 @@ mod tests {
             draft.launch_path,
             "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ScreenToGif.lnk"
         );
+    }
+
+    #[test]
+    fn low_code_draft_exports_key_macro_steps_into_executable_plugin_action() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime.key_results.push_back(Ok(()));
+            runtime.typed_input_results.push_back(Ok(()));
+        });
+
+        let draft = LowCodePluginDraft {
+            kind: LowCodePluginKind::KeyMacro,
+            title: "Macro".into(),
+            description: String::new(),
+            icon: None,
+            key_macro_steps: vec![
+                LowCodeKeyMacroStep::SendKeys {
+                    modifiers: "alt".into(),
+                    key: "C".into(),
+                },
+                LowCodeKeyMacroStep::Delay { delay_ms: 300 },
+                LowCodeKeyMacroStep::TypeText {
+                    text: "demo".into(),
+                },
+            ],
+            launch_path: String::new(),
+            launch_arguments: String::new(),
+            launch_set_working_dir: false,
+            steps: Vec::new(),
+        };
+
+        let action = draft.to_action().expect("draft should export");
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.key_calls, vec![(vec!["alt".into()], "c".into())]);
+            assert_eq!(runtime.delays, vec![300]);
+            assert_eq!(runtime.typed_inputs, vec!["demo"]);
+        });
     }
 
     #[test]
