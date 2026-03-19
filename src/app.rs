@@ -1,4 +1,7 @@
-use crate::action::{Action, ActionKind, ExecResult};
+use crate::action::{
+    Action, ActionKind, ExecResult, LowCodeClipboardFormat, LowCodePluginDraft,
+    LowCodePluginStep, LowCodeStringProcessMethod, LowCodeWriteClipboardKind,
+};
 use crate::config::Config;
 use crate::focus::{self, FocusTracker};
 use crate::search::SearchEngine;
@@ -79,6 +82,11 @@ enum View {
     ScriptOutput,
 }
 
+#[derive(Clone, Copy)]
+struct StepDragPayload {
+    from: usize,
+}
+
 pub struct QuickerApp {
     config: Config,
     search: SearchEngine,
@@ -106,6 +114,8 @@ pub struct QuickerApp {
     edit_field1: String, // command / path / url / script / text / template
     edit_field2: String, // args / shell / fallback url
     edit_field3: String, // working_dir
+    plugin_draft: LowCodePluginDraft,
+    plugin_new_step_idx: usize,
 }
 
 impl QuickerApp {
@@ -152,6 +162,8 @@ impl QuickerApp {
             edit_field1: String::new(),
             edit_field2: String::new(),
             edit_field3: String::new(),
+            plugin_draft: LowCodePluginDraft::default(),
+            plugin_new_step_idx: 0,
         }
     }
 
@@ -247,6 +259,8 @@ impl QuickerApp {
         self.edit_field1.clear();
         self.edit_field2.clear();
         self.edit_field3.clear();
+        self.plugin_draft = LowCodePluginDraft::default();
+        self.plugin_new_step_idx = 0;
     }
 
     fn global_profile_idx(&self) -> usize {
@@ -564,20 +578,433 @@ impl QuickerApp {
         }
     }
 
+    fn plugin_step_kind_labels() -> [&'static str; 13] {
+        [
+            "Open URL",
+            "Delay",
+            "Key Input",
+            "Get Clipboard",
+            "Write Clipboard",
+            "Regex Extract",
+            "String Process",
+            "Split String",
+            "Assign",
+            "Replace Text",
+            "Format String",
+            "Notify",
+            "Output Text",
+        ]
+    }
+
+    fn make_plugin_step(kind_idx: usize) -> LowCodePluginStep {
+        match kind_idx {
+            0 => LowCodePluginStep::OpenUrl {
+                url: "https://example.com".into(),
+            },
+            1 => LowCodePluginStep::Delay { delay_ms: 100 },
+            2 => LowCodePluginStep::KeyInput {
+                modifiers: "ctrl".into(),
+                key: "V".into(),
+            },
+            3 => LowCodePluginStep::GetClipboard {
+                format: LowCodeClipboardFormat::Text,
+                output: "text".into(),
+            },
+            4 => LowCodePluginStep::WriteClipboard {
+                clipboard_type: LowCodeWriteClipboardKind::Auto,
+                source: "$text".into(),
+                alt_text: String::new(),
+            },
+            5 => LowCodePluginStep::RegexExtract {
+                input: "$text".into(),
+                pattern: String::new(),
+                output: "match".into(),
+            },
+            6 => LowCodePluginStep::StringProcess {
+                input: "$text".into(),
+                method: LowCodeStringProcessMethod::ToLower,
+                output: "output".into(),
+            },
+            7 => LowCodePluginStep::SplitString {
+                input: "$text".into(),
+                separator: "\\r\\n".into(),
+                output: "parts".into(),
+            },
+            8 => LowCodePluginStep::Assign {
+                expression: "$={parts}[0]".into(),
+                output: "first_part".into(),
+            },
+            9 => LowCodePluginStep::StrReplace {
+                input: "$text".into(),
+                pattern: String::new(),
+                replacement: String::new(),
+                use_regex: true,
+                output: "output".into(),
+            },
+            10 => LowCodePluginStep::FormatString {
+                template: "{0}".into(),
+                p0: "$text".into(),
+                p1: String::new(),
+                p2: String::new(),
+                p3: String::new(),
+                p4: String::new(),
+                output: "output".into(),
+            },
+            11 => LowCodePluginStep::Notify {
+                message: "Done".into(),
+            },
+            12 => LowCodePluginStep::OutputText {
+                content: "$text".into(),
+                append_return: false,
+            },
+            _ => LowCodePluginStep::Notify {
+                message: "Done".into(),
+            },
+        }
+    }
+
+    fn render_plugin_step_card(ui: &mut egui::Ui, index: usize, step: &mut LowCodePluginStep) -> bool {
+        let mut remove = false;
+
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(10))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                    ui.label(
+                        egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
+                            .strong(),
+                    );
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui.small_button("Delete").clicked() {
+                                remove = true;
+                            }
+                        },
+                    );
+                });
+                ui.add_space(6.0);
+
+                match step {
+                    LowCodePluginStep::OpenUrl { url } => {
+                        ui.label("URL or $variable:");
+                        ui.text_edit_singleline(url);
+                    }
+                    LowCodePluginStep::Delay { delay_ms } => {
+                        ui.label("Delay (ms):");
+                        ui.add(egui::DragValue::new(delay_ms).range(0..=60_000).speed(10));
+                    }
+                    LowCodePluginStep::KeyInput { modifiers, key } => {
+                        ui.label("Modifiers (ctrl+shift style):");
+                        ui.text_edit_singleline(modifiers);
+                        ui.label("Key:");
+                        ui.text_edit_singleline(key);
+                    }
+                    LowCodePluginStep::GetClipboard { format, output } => {
+                        ui.horizontal(|ui| {
+                            ui.label("Format:");
+                            egui::ComboBox::from_id_salt(("clip_format", index))
+                                .selected_text(match format {
+                                    LowCodeClipboardFormat::Text => "Text",
+                                    LowCodeClipboardFormat::Html => "HTML",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(format, LowCodeClipboardFormat::Text, "Text");
+                                    ui.selectable_value(format, LowCodeClipboardFormat::Html, "HTML");
+                                });
+                        });
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::WriteClipboard {
+                        clipboard_type,
+                        source,
+                        alt_text,
+                    } => {
+                        ui.horizontal(|ui| {
+                            ui.label("Clipboard type:");
+                            egui::ComboBox::from_id_salt(("write_clip_kind", index))
+                                .selected_text(match clipboard_type {
+                                    LowCodeWriteClipboardKind::Auto => "Auto",
+                                    LowCodeWriteClipboardKind::Text => "Text",
+                                    LowCodeWriteClipboardKind::Html => "HTML",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        clipboard_type,
+                                        LowCodeWriteClipboardKind::Auto,
+                                        "Auto",
+                                    );
+                                    ui.selectable_value(
+                                        clipboard_type,
+                                        LowCodeWriteClipboardKind::Text,
+                                        "Text",
+                                    );
+                                    ui.selectable_value(
+                                        clipboard_type,
+                                        LowCodeWriteClipboardKind::Html,
+                                        "HTML",
+                                    );
+                                });
+                        });
+                        ui.label("Source text or $variable:");
+                        ui.text_edit_singleline(source);
+                        if matches!(clipboard_type, LowCodeWriteClipboardKind::Html) {
+                            ui.label("Plain-text fallback:");
+                            ui.text_edit_singleline(alt_text);
+                        }
+                    }
+                    LowCodePluginStep::RegexExtract {
+                        input,
+                        pattern,
+                        output,
+                    } => {
+                        ui.label("Input text or $variable:");
+                        ui.text_edit_singleline(input);
+                        ui.label("Regex pattern:");
+                        ui.text_edit_singleline(pattern);
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::StringProcess {
+                        input,
+                        method,
+                        output,
+                    } => {
+                        ui.label("Input text or $variable:");
+                        ui.text_edit_singleline(input);
+                        ui.horizontal(|ui| {
+                            ui.label("Method:");
+                            egui::ComboBox::from_id_salt(("string_process", index))
+                                .selected_text(match method {
+                                    LowCodeStringProcessMethod::ToLower => "toLower",
+                                    LowCodeStringProcessMethod::UrlEncode => "urlEncode",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        method,
+                                        LowCodeStringProcessMethod::ToLower,
+                                        "toLower",
+                                    );
+                                    ui.selectable_value(
+                                        method,
+                                        LowCodeStringProcessMethod::UrlEncode,
+                                        "urlEncode",
+                                    );
+                                });
+                        });
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::SplitString {
+                        input,
+                        separator,
+                        output,
+                    } => {
+                        ui.label("Input text or $variable:");
+                        ui.text_edit_singleline(input);
+                        ui.label("Separator (supports escapes like \\r\\n):");
+                        ui.text_edit_singleline(separator);
+                        ui.label("Output array variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::Assign { expression, output } => {
+                        ui.label("Expression or source value:");
+                        ui.text_edit_singleline(expression);
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::StrReplace {
+                        input,
+                        pattern,
+                        replacement,
+                        use_regex,
+                        output,
+                    } => {
+                        ui.label("Input text or $variable:");
+                        ui.text_edit_singleline(input);
+                        ui.label("Pattern / old text:");
+                        ui.text_edit_singleline(pattern);
+                        ui.label("Replacement:");
+                        ui.text_edit_singleline(replacement);
+                        ui.checkbox(use_regex, "Use regex");
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::FormatString {
+                        template,
+                        p0,
+                        p1,
+                        p2,
+                        p3,
+                        p4,
+                        output,
+                    } => {
+                        ui.label("Template:");
+                        ui.text_edit_singleline(template);
+                        for (label, value) in [
+                            ("P0", p0),
+                            ("P1", p1),
+                            ("P2", p2),
+                            ("P3", p3),
+                            ("P4", p4),
+                        ] {
+                            ui.label(format!("{label} value or $variable:"));
+                            ui.text_edit_singleline(value);
+                        }
+                        ui.label("Output variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::Notify { message } => {
+                        ui.label("Message:");
+                        ui.text_edit_singleline(message);
+                    }
+                    LowCodePluginStep::OutputText {
+                        content,
+                        append_return,
+                    } => {
+                        ui.label("Content or $variable:");
+                        ui.text_edit_singleline(content);
+                        ui.checkbox(append_return, "Append Return");
+                    }
+                }
+            });
+
+        remove
+    }
+
     fn render_plugin_json_editor(&mut self, ui: &mut egui::Ui) {
-        ui.label("Quicker plugin JSON:");
+        ui.label("Plugin Title:");
+        ui.text_edit_singleline(&mut self.plugin_draft.title);
+        ui.label("Description:");
+        ui.text_edit_singleline(&mut self.plugin_draft.description);
+        ui.label("Icon:");
+        let mut icon_text = self.plugin_draft.icon.clone().unwrap_or_default();
+        if ui.text_edit_singleline(&mut icon_text).changed() {
+            self.plugin_draft.icon = if icon_text.trim().is_empty() {
+                None
+            } else {
+                Some(icon_text)
+            };
+        }
+
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Low-code steps").strong());
         ui.label(
             egui::RichText::new(
-                "Paste a full Quicker action document from sample/. quicker-rs stores the native JSON and can run the sample action types 7, 11, and the supported step-based parts of 24.",
+                "Use $var to read a previous step output. Drag cards to reorder them. The builder currently targets the flat ActionType 24 step set supported by quicker-rs.",
             )
             .weak()
             .small(),
         );
         ui.add_space(6.0);
+
+        let labels = Self::plugin_step_kind_labels();
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("plugin_new_step_kind")
+                .selected_text(labels[self.plugin_new_step_idx])
+                .show_ui(ui, |ui| {
+                    for (idx, label) in labels.iter().enumerate() {
+                        ui.selectable_value(&mut self.plugin_new_step_idx, idx, *label);
+                    }
+                });
+
+            if ui.button("Add Step").clicked() {
+                self.plugin_draft
+                    .steps
+                    .push(Self::make_plugin_step(self.plugin_new_step_idx));
+            }
+        });
+
+        ui.add_space(8.0);
+        let mut remove_idx = None;
+        let mut move_request = None;
+        let drop_frame = egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+
+        if self.plugin_draft.steps.is_empty() {
+            ui.label(egui::RichText::new("No steps yet. Add one from the palette above.").weak());
+        } else {
+            for insert_idx in 0..=self.plugin_draft.steps.len() {
+                let (_, dropped) = ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Drop step here").weak().small());
+                    });
+                });
+                if let Some(payload) = dropped {
+                    move_request = Some((payload.from, insert_idx));
+                }
+
+                if insert_idx == self.plugin_draft.steps.len() {
+                    break;
+                }
+
+                let response = ui.dnd_drag_source(
+                    egui::Id::new(("plugin_step", insert_idx)),
+                    StepDragPayload { from: insert_idx },
+                    |ui| Self::render_plugin_step_card(ui, insert_idx, &mut self.plugin_draft.steps[insert_idx]),
+                );
+                if response.inner {
+                    remove_idx = Some(insert_idx);
+                }
+                ui.add_space(4.0);
+            }
+        }
+
+        if let Some((from, mut to)) = move_request {
+            if from < self.plugin_draft.steps.len() {
+                if from < to {
+                    to -= 1;
+                }
+                if from != to && to <= self.plugin_draft.steps.len() {
+                    let step = self.plugin_draft.steps.remove(from);
+                    self.plugin_draft.steps.insert(to, step);
+                }
+            }
+        }
+        if let Some(idx) = remove_idx {
+            if idx < self.plugin_draft.steps.len() {
+                self.plugin_draft.steps.remove(idx);
+            }
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Raw JSON Import / Export").strong());
+        ui.label(
+            egui::RichText::new(
+                "Import a supported ActionType 24 plugin into the builder, or export the current draft as native Quicker JSON.",
+            )
+            .weak()
+            .small(),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Export Draft to JSON").clicked() {
+                match self.plugin_draft.to_quicker_json() {
+                    Ok(json) => {
+                        self.edit_field1 = json;
+                        self.show_toast("Draft exported to JSON".into(), false);
+                    }
+                    Err(err) => self.show_toast(err, true),
+                }
+            }
+            if ui.button("Import JSON Into Builder").clicked() {
+                match LowCodePluginDraft::from_quicker_plugin_json(&self.edit_field1) {
+                    Ok(draft) => {
+                        self.plugin_draft = draft;
+                        self.show_toast("Imported JSON into the builder".into(), false);
+                    }
+                    Err(err) => self.show_toast(err, true),
+                }
+            }
+        });
         ui.add(
             egui::TextEdit::multiline(&mut self.edit_field1)
                 .desired_width(f32::INFINITY)
-                .desired_rows(20)
+                .desired_rows(12)
                 .code_editor(),
         );
     }
@@ -1145,14 +1572,6 @@ impl QuickerApp {
                 }
                 10 => {
                     self.render_plugin_json_editor(ui);
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "The plugin title, description, and icon are read from the Quicker JSON itself.",
-                        )
-                        .weak()
-                        .small(),
-                    );
                 }
                 _ => {}
             }
@@ -1217,7 +1636,7 @@ impl QuickerApp {
                         },
                     },
                     10 => {
-                        let action = match Action::from_quicker_plugin_json(&self.edit_field1) {
+                        let action = match self.plugin_draft.to_action() {
                             Ok(action) => action,
                             Err(err) => {
                                 self.show_toast(err, true);

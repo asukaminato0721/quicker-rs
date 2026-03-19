@@ -1,7 +1,7 @@
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -71,6 +71,100 @@ pub enum ActionKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginPipelineStorage {
     pub quicker_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LowCodePluginDraft {
+    pub title: String,
+    pub description: String,
+    pub icon: Option<String>,
+    pub steps: Vec<LowCodePluginStep>,
+}
+
+impl Default for LowCodePluginDraft {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            description: String::new(),
+            icon: None,
+            steps: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LowCodePluginStep {
+    OpenUrl { url: String },
+    Delay { delay_ms: u32 },
+    KeyInput { modifiers: String, key: String },
+    GetClipboard {
+        format: LowCodeClipboardFormat,
+        output: String,
+    },
+    WriteClipboard {
+        clipboard_type: LowCodeWriteClipboardKind,
+        source: String,
+        alt_text: String,
+    },
+    RegexExtract {
+        input: String,
+        pattern: String,
+        output: String,
+    },
+    StringProcess {
+        input: String,
+        method: LowCodeStringProcessMethod,
+        output: String,
+    },
+    SplitString {
+        input: String,
+        separator: String,
+        output: String,
+    },
+    Assign {
+        expression: String,
+        output: String,
+    },
+    StrReplace {
+        input: String,
+        pattern: String,
+        replacement: String,
+        use_regex: bool,
+        output: String,
+    },
+    FormatString {
+        template: String,
+        p0: String,
+        p1: String,
+        p2: String,
+        p3: String,
+        p4: String,
+        output: String,
+    },
+    Notify { message: String },
+    OutputText {
+        content: String,
+        append_return: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowCodeClipboardFormat {
+    Text,
+    Html,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowCodeWriteClipboardKind {
+    Auto,
+    Text,
+    Html,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowCodeStringProcessMethod {
+    ToLower,
+    UrlEncode,
 }
 
 fn default_shell() -> String {
@@ -273,6 +367,484 @@ impl Action {
             _ => {}
         }
         parts.join(" ")
+    }
+}
+
+impl LowCodePluginDraft {
+    pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
+        let document: QuickerActionDocument = serde_json::from_str(input)
+            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+
+        if document.action_type != QUICKER_PLUGIN_ACTION_TYPE {
+            return Err("The low-code editor currently supports ActionType 24 plugin documents only".into());
+        }
+        if document.use_template.unwrap_or(false) && !document.has_data() {
+            return Err(
+                "Template-based Quicker actions cannot be opened in the low-code editor because the template body is not embedded"
+                    .into(),
+            );
+        }
+
+        let data = document.data_payload()?;
+        let mut steps = Vec::with_capacity(data.steps.len());
+
+        for step in &data.steps {
+            if step.disabled {
+                continue;
+            }
+            if step.if_steps.as_ref().is_some_and(|items| !items.is_empty())
+                || step.else_steps.as_ref().is_some_and(|items| !items.is_empty())
+            {
+                return Err(format!(
+                    "The low-code editor currently supports flat step lists only. Unsupported nested step: {}",
+                    step.step_runner_key
+                ));
+            }
+
+            let draft_step = match step.step_runner_key.as_str() {
+                "sys:openUrl" => LowCodePluginStep::OpenUrl {
+                    url: binding_string(&step.input_params, "url").unwrap_or_default(),
+                },
+                "sys:delay" => LowCodePluginStep::Delay {
+                    delay_ms: binding_string(&step.input_params, "delayMs")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(0),
+                },
+                "sys:keyInput" => {
+                    let payload: QuickerKeyInput = serde_json::from_str(
+                        &binding_string(&step.input_params, "keys").unwrap_or_default(),
+                    )
+                    .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
+                    LowCodePluginStep::KeyInput {
+                        modifiers: payload
+                            .ctrl_keys
+                            .into_iter()
+                            .filter_map(low_code_modifier_name)
+                            .collect::<Vec<_>>()
+                            .join("+"),
+                        key: payload
+                            .keys
+                            .first()
+                            .and_then(|code| low_code_key_name(*code))
+                            .unwrap_or_default(),
+                    }
+                }
+                "sys:getClipboardText" => LowCodePluginStep::GetClipboard {
+                    format: match binding_string(&step.input_params, "format").as_deref() {
+                        Some("Html") => LowCodeClipboardFormat::Html,
+                        _ => LowCodeClipboardFormat::Text,
+                    },
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:writeClipboard" => LowCodePluginStep::WriteClipboard {
+                    clipboard_type: match binding_string(&step.input_params, "type")
+                        .unwrap_or_else(|| "auto".into())
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "text" => LowCodeWriteClipboardKind::Text,
+                        "html" => LowCodeWriteClipboardKind::Html,
+                        _ => LowCodeWriteClipboardKind::Auto,
+                    },
+                    source: binding_string(&step.input_params, "html")
+                        .or_else(|| binding_string(&step.input_params, "text"))
+                        .or_else(|| binding_string(&step.input_params, "input"))
+                        .unwrap_or_default(),
+                    alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
+                },
+                "sys:regexExtract" => LowCodePluginStep::RegexExtract {
+                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                    pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
+                    output: output_var_name(&step.output_params, "match1")
+                        .or_else(|| output_var_name(&step.output_params, "output"))
+                        .or_else(|| output_var_name(&step.output_params, "matches"))
+                        .unwrap_or_default(),
+                },
+                "sys:stringProcess" => LowCodePluginStep::StringProcess {
+                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                    method: match binding_string(&step.input_params, "method").as_deref() {
+                        Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
+                        _ => LowCodeStringProcessMethod::ToLower,
+                    },
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:splitString" => LowCodePluginStep::SplitString {
+                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                    separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:assign" => LowCodePluginStep::Assign {
+                    expression: binding_string(&step.input_params, "input").unwrap_or_default(),
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:strReplace" => LowCodePluginStep::StrReplace {
+                    input: binding_string(&step.input_params, "input").unwrap_or_default(),
+                    pattern: binding_string(&step.input_params, "old").unwrap_or_default(),
+                    replacement: binding_string(&step.input_params, "new").unwrap_or_default(),
+                    use_regex: binding_bool(&step.input_params, "useRegex"),
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:formatString" => LowCodePluginStep::FormatString {
+                    template: binding_string(&step.input_params, "formatString").unwrap_or_default(),
+                    p0: binding_string(&step.input_params, "p0").unwrap_or_default(),
+                    p1: binding_string(&step.input_params, "p1").unwrap_or_default(),
+                    p2: binding_string(&step.input_params, "p2").unwrap_or_default(),
+                    p3: binding_string(&step.input_params, "p3").unwrap_or_default(),
+                    p4: binding_string(&step.input_params, "p4").unwrap_or_default(),
+                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                },
+                "sys:notify" => LowCodePluginStep::Notify {
+                    message: binding_string(&step.input_params, "msg").unwrap_or_default(),
+                },
+                "sys:outputText" => LowCodePluginStep::OutputText {
+                    content: binding_string(&step.input_params, "content").unwrap_or_default(),
+                    append_return: binding_bool(&step.input_params, "appendReturn"),
+                },
+                other => {
+                    return Err(format!(
+                        "The low-code editor does not support step '{}' yet. Use the raw JSON path for that action.",
+                        other
+                    ));
+                }
+            };
+
+            steps.push(draft_step);
+        }
+
+        Ok(Self {
+            title: document.title,
+            description: document.description,
+            icon: document.icon,
+            steps,
+        })
+    }
+
+    pub fn to_quicker_json(&self) -> Result<String, String> {
+        let mut variable_names = BTreeSet::new();
+        let steps = self
+            .steps
+            .iter()
+            .map(|step| step.to_step_document(&mut variable_names))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let variables = variable_names
+            .into_iter()
+            .map(|name| QuickerPluginVariable {
+                key: name,
+                value_type: Some(0),
+                default_value: Some(String::new()),
+                save_state: Some(false),
+            })
+            .collect();
+
+        let data = QuickerPluginData {
+            limit_single_instance: false,
+            summary_expression: Some(String::new()),
+            sub_programs: Vec::new(),
+            variables,
+            steps,
+        };
+
+        let document = QuickerActionDocument {
+            row: Some(0),
+            col: Some(0),
+            action_type: QUICKER_PLUGIN_ACTION_TYPE,
+            title: self.title.clone(),
+            description: self.description.clone(),
+            icon: self.icon.clone(),
+            path: None,
+            delay_ms: Some(0),
+            data: Some(
+                serde_json::to_string(&data)
+                    .map_err(|err| format!("Failed to serialize plugin data: {err}"))?,
+            ),
+            data2: Some(String::new()),
+            data3: Some(String::new()),
+            children: None,
+            id: None,
+            template_id: None,
+            template_revision: Some(0),
+            use_template: Some(false),
+            last_edit_time_utc: None,
+            shared_action_id: None,
+            share_time_utc: None,
+            create_time_utc: None,
+            as_sub_program: Some(false),
+            skip_when_stop_running_actions: Some(false),
+            skip_check_update: Some(false),
+            auto_update: Some(false),
+            keep_info_when_update: Some(false),
+            min_quicker_version: Some(String::new()),
+            context_menu_data: Some(String::new()),
+            allow_scroll_trigger: Some(false),
+            enable_evaluate_variable: Some(true),
+            is_text_processor: Some(false),
+            is_image_processor: Some(false),
+            association: Some(QuickerAssociation {
+                match_process: None,
+                is_image_processor: Some(false),
+                return_image_from_first_screen_shot_step: Some(true),
+                is_text_processor: Some(false),
+                return_text_from_get_selected_text_step: Some(true),
+                text_match_expression: Some(String::new()),
+                text_min_length: Some(0),
+                text_max_length: Some(0),
+                is_html_processor: Some(false),
+                is_file_processor: Some(false),
+                file_min_count: Some(0),
+                file_max_count: Some(0),
+                allowed_file_extensions: Some(String::new()),
+                require_all_file_match_ext: Some(false),
+                search_box_placeholder: Some(String::new()),
+                is_window_processor: Some(false),
+                enable_realtime_search: Some(false),
+                browser_context_menu: None,
+                url_pattern: None,
+            }),
+            do_not_close_panel: Some(false),
+            user_limitation: None,
+        };
+
+        serde_json::to_string_pretty(&document)
+            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
+    }
+
+    pub fn to_action(&self) -> Result<Action, String> {
+        let quicker_json = self.to_quicker_json()?;
+        Ok(Action {
+            name: self.title.clone(),
+            description: self.description.clone(),
+            icon: self.icon.clone(),
+            tags: Vec::new(),
+            hotkey: None,
+            kind: ActionKind::PluginPipeline {
+                plugin: PluginPipelineStorage { quicker_json },
+            },
+        })
+    }
+}
+
+impl LowCodePluginStep {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::OpenUrl { .. } => "Open URL",
+            Self::Delay { .. } => "Delay",
+            Self::KeyInput { .. } => "Key Input",
+            Self::GetClipboard { .. } => "Get Clipboard",
+            Self::WriteClipboard { .. } => "Write Clipboard",
+            Self::RegexExtract { .. } => "Regex Extract",
+            Self::StringProcess { .. } => "String Process",
+            Self::SplitString { .. } => "Split String",
+            Self::Assign { .. } => "Assign",
+            Self::StrReplace { .. } => "Replace Text",
+            Self::FormatString { .. } => "Format String",
+            Self::Notify { .. } => "Notify",
+            Self::OutputText { .. } => "Output Text",
+        }
+    }
+
+    fn to_step_document(
+        &self,
+        variable_names: &mut BTreeSet<String>,
+    ) -> Result<QuickerPluginStepDocument, String> {
+        match self {
+            Self::OpenUrl { url } => Ok(step_document(
+                "sys:openUrl",
+                map_with_binding([("url", url.as_str())]),
+                Map::new(),
+            )),
+            Self::Delay { delay_ms } => Ok(step_document(
+                "sys:delay",
+                map_with_binding([("delayMs", &delay_ms.to_string())]),
+                Map::new(),
+            )),
+            Self::KeyInput { modifiers, key } => Ok(step_document(
+                "sys:keyInput",
+                map_with_binding([(
+                    "keys",
+                    &serde_json::to_string(&QuickerKeyInput {
+                        ctrl_keys: parse_low_code_modifiers(modifiers),
+                        keys: vec![parse_low_code_key(key)?],
+                    })
+                    .map_err(|err| format!("Failed to serialize keyInput payload: {err}"))?,
+                )]),
+                Map::new(),
+            )),
+            Self::GetClipboard { format, output } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:getClipboardText",
+                    {
+                        let mut input = map_with_binding([(
+                            "format",
+                            match format {
+                                LowCodeClipboardFormat::Text => "UnicodeText",
+                                LowCodeClipboardFormat::Html => "Html",
+                            },
+                        )]);
+                        input.insert("stopIfFail".into(), low_code_literal("1"));
+                        input
+                    },
+                    map_with_output([("output", output.as_str()), ("isSuccess", "")]),
+                ))
+            }
+            Self::WriteClipboard {
+                clipboard_type,
+                source,
+                alt_text,
+            } => {
+                let type_name = match clipboard_type {
+                    LowCodeWriteClipboardKind::Auto => "auto",
+                    LowCodeWriteClipboardKind::Text => "text",
+                    LowCodeWriteClipboardKind::Html => "html",
+                };
+                let mut input = map_with_binding([("type", type_name)]);
+                match clipboard_type {
+                    LowCodeWriteClipboardKind::Text => {
+                        input.insert("text".into(), low_code_binding(source));
+                    }
+                    LowCodeWriteClipboardKind::Html => {
+                        input.insert("html".into(), low_code_binding(source));
+                        input.insert("text".into(), low_code_binding(alt_text));
+                    }
+                    LowCodeWriteClipboardKind::Auto => {
+                        input.insert("input".into(), low_code_binding(source));
+                    }
+                }
+                Ok(step_document("sys:writeClipboard", input, Map::new()))
+            }
+            Self::RegexExtract {
+                input,
+                pattern,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                let mut input_params = map_with_binding([
+                    ("data", input.as_str()),
+                    ("pattern", pattern.as_str()),
+                ]);
+                input_params.insert("getGroup".into(), low_code_literal("0"));
+                input_params.insert("stopIfFail".into(), low_code_literal("1"));
+                Ok(step_document(
+                    "sys:regexExtract",
+                    input_params,
+                    map_with_output([("match1", output.as_str()), ("isSuccess", "")]),
+                ))
+            }
+            Self::StringProcess {
+                input,
+                method,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:stringProcess",
+                    map_with_binding([
+                        ("data", input.as_str()),
+                        (
+                            "method",
+                            match method {
+                                LowCodeStringProcessMethod::ToLower => "toLower",
+                                LowCodeStringProcessMethod::UrlEncode => "urlEncode",
+                            },
+                        ),
+                    ]),
+                    map_with_output([("output", output.as_str()), ("isSuccess", "")]),
+                ))
+            }
+            Self::SplitString {
+                input,
+                separator,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                let mut input_params = map_with_binding([
+                    ("data", input.as_str()),
+                    ("separator", separator.as_str()),
+                ]);
+                input_params.insert("escapeSeparator".into(), low_code_literal("1"));
+                input_params.insert("removeEmpty".into(), low_code_literal("1"));
+                Ok(step_document(
+                    "sys:splitString",
+                    input_params,
+                    map_with_output([("output", output.as_str())]),
+                ))
+            }
+            Self::Assign { expression, output } => {
+                track_variable_name(variable_names, output);
+                let mut input_params = map_with_binding([("input", expression.as_str())]);
+                input_params.insert("stopIfFail".into(), low_code_literal("1"));
+                Ok(step_document(
+                    "sys:assign",
+                    input_params,
+                    map_with_output([("output", output.as_str()), ("isSuccess", "")]),
+                ))
+            }
+            Self::StrReplace {
+                input,
+                pattern,
+                replacement,
+                use_regex,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                let mut input_params = map_with_binding([
+                    ("input", input.as_str()),
+                    ("old", pattern.as_str()),
+                    ("new", replacement.as_str()),
+                ]);
+                input_params.insert(
+                    "useRegex".into(),
+                    low_code_literal(if *use_regex { "1" } else { "0" }),
+                );
+                input_params.insert("replaceEscapes".into(), low_code_literal("1"));
+                Ok(step_document(
+                    "sys:strReplace",
+                    input_params,
+                    map_with_output([("output", output.as_str())]),
+                ))
+            }
+            Self::FormatString {
+                template,
+                p0,
+                p1,
+                p2,
+                p3,
+                p4,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:formatString",
+                    map_with_binding([
+                        ("formatString", template.as_str()),
+                        ("p0", p0.as_str()),
+                        ("p1", p1.as_str()),
+                        ("p2", p2.as_str()),
+                        ("p3", p3.as_str()),
+                        ("p4", p4.as_str()),
+                    ]),
+                    map_with_output([("output", output.as_str())]),
+                ))
+            }
+            Self::Notify { message } => Ok(step_document(
+                "sys:notify",
+                map_with_binding([("msg", message.as_str())]),
+                Map::new(),
+            )),
+            Self::OutputText {
+                content,
+                append_return,
+            } => {
+                let mut input_params = map_with_binding([("content", content.as_str())]);
+                input_params.insert("method".into(), low_code_literal("paste"));
+                input_params.insert(
+                    "appendReturn".into(),
+                    low_code_literal(if *append_return { "1" } else { "0" }),
+                );
+                Ok(step_document("sys:outputText", input_params, Map::new()))
+            }
+        }
     }
 }
 
@@ -509,6 +1081,152 @@ struct QuickerValueBinding {
     var_key: Option<String>,
     #[serde(default)]
     value: Option<Value>,
+}
+
+fn step_document(
+    runner: &str,
+    input_params: Map<String, Value>,
+    output_params: Map<String, Value>,
+) -> QuickerPluginStepDocument {
+    QuickerPluginStepDocument {
+        step_runner_key: runner.into(),
+        input_params,
+        output_params,
+        if_steps: None,
+        else_steps: None,
+        note: None,
+        disabled: false,
+        collapsed: false,
+        delay_ms: 0,
+    }
+}
+
+fn map_with_binding<const N: usize>(pairs: [(&str, &str); N]) -> Map<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), low_code_binding(value)))
+        .collect()
+}
+
+fn map_with_output<const N: usize>(pairs: [(&str, &str); N]) -> Map<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| {
+            (
+                key.to_string(),
+                if value.trim().is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(value.to_string())
+                },
+            )
+        })
+        .collect()
+}
+
+fn low_code_binding(value: &str) -> Value {
+    if let Some(var_name) = value.strip_prefix('$') {
+        serde_json::json!({
+            "VarKey": var_name.trim(),
+            "Value": Value::Null,
+        })
+    } else {
+        low_code_literal(value)
+    }
+}
+
+fn low_code_literal(value: &str) -> Value {
+    serde_json::json!({
+        "VarKey": Value::Null,
+        "Value": value,
+    })
+}
+
+fn binding_string(params: &Map<String, Value>, key: &str) -> Option<String> {
+    let raw = params.get(key)?;
+    let binding: QuickerValueBinding = serde_json::from_value(raw.clone()).ok()?;
+    if let Some(var_key) = binding.var_key {
+        return Some(format!("${var_key}"));
+    }
+
+    binding.value.map(|value| value_to_string(&value))
+}
+
+fn binding_bool(params: &Map<String, Value>, key: &str) -> bool {
+    let Some(raw) = params.get(key) else {
+        return false;
+    };
+    let Ok(binding) = serde_json::from_value::<QuickerValueBinding>(raw.clone()) else {
+        return false;
+    };
+    binding.value.as_ref().map(|value| truthy(Some(value))).unwrap_or(false)
+}
+
+fn track_variable_name(variable_names: &mut BTreeSet<String>, name: &str) {
+    let trimmed = name.trim();
+    if !trimmed.is_empty() {
+        variable_names.insert(trimmed.to_string());
+    }
+}
+
+fn parse_low_code_modifiers(value: &str) -> Vec<u32> {
+    value
+        .split(['+', ',', ' '])
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .filter_map(|token| match token.to_ascii_lowercase().as_str() {
+            "shift" => Some(160),
+            "ctrl" | "control" => Some(162),
+            "alt" => Some(164),
+            "super" | "win" | "meta" => Some(91),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_low_code_key(value: &str) -> Result<u32, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "return" | "enter" => Ok(13),
+        "escape" | "esc" => Ok(27),
+        "left" => Ok(37),
+        "up" => Ok(38),
+        "right" => Ok(39),
+        "down" => Ok(40),
+        key if key.len() == 1 => {
+            let ch = key.chars().next().unwrap();
+            if ch.is_ascii_digit() {
+                Ok(ch as u32)
+            } else if ch.is_ascii_alphabetic() {
+                Ok(ch.to_ascii_uppercase() as u32)
+            } else {
+                Err(format!("Unsupported low-code key: {value}"))
+            }
+        }
+        _ => Err(format!("Unsupported low-code key: {value}")),
+    }
+}
+
+fn low_code_modifier_name(code: u32) -> Option<String> {
+    match code {
+        16 | 160 | 161 => Some("shift".into()),
+        17 | 162 | 163 => Some("ctrl".into()),
+        18 | 164 | 165 => Some("alt".into()),
+        91 | 92 => Some("super".into()),
+        _ => None,
+    }
+}
+
+fn low_code_key_name(code: u32) -> Option<String> {
+    Some(match code {
+        13 => "Return".into(),
+        27 => "Escape".into(),
+        37 => "Left".into(),
+        38 => "Up".into(),
+        39 => "Right".into(),
+        40 => "Down".into(),
+        48..=57 | 65..=90 => char::from_u32(code)?.to_string(),
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1821,6 +2539,46 @@ mod tests {
                     (vec!["ctrl".into()], "v".into())
                 ]
             );
+        });
+    }
+
+    #[test]
+    fn low_code_draft_imports_supported_plugin_json() {
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(
+            &sample("sample/快捷键_20260319_105627.json"),
+        )
+        .expect("sample should import");
+
+        assert_eq!(draft.title, "快捷键");
+        assert_eq!(draft.steps.len(), 1);
+        assert_eq!(
+            draft.steps,
+            vec![LowCodePluginStep::OpenUrl {
+                url: "https://www.yuque.com/supermemo/wiki/keyboard-shortcuts".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn low_code_draft_exports_into_executable_plugin_action() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
+
+        let draft = LowCodePluginDraft {
+            title: "Docs".into(),
+            description: "open docs".into(),
+            icon: Some("fa:Light_Keyboard".into()),
+            steps: vec![LowCodePluginStep::OpenUrl {
+                url: "https://example.com/docs".into(),
+            }],
+        };
+
+        let action = draft.to_action().expect("draft should export");
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.opened_targets, vec!["https://example.com/docs"]);
         });
     }
 
