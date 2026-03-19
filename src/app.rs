@@ -55,6 +55,7 @@ struct ActionScope {
 struct ActionListEntry {
     profile_idx: usize,
     section: ActionSection,
+    path: Vec<usize>,
     action_idx: usize,
     action: Action,
 }
@@ -87,6 +88,13 @@ struct StepDragPayload {
     from: usize,
 }
 
+#[derive(Clone)]
+struct ActionEditTarget {
+    profile_idx: usize,
+    path: Vec<usize>,
+    action_idx: usize,
+}
+
 pub struct QuickerApp {
     config: Config,
     search: SearchEngine,
@@ -116,6 +124,7 @@ pub struct QuickerApp {
     edit_field3: String, // working_dir
     plugin_draft: LowCodePluginDraft,
     plugin_new_step_idx: usize,
+    edit_target: Option<ActionEditTarget>,
 }
 
 impl QuickerApp {
@@ -164,6 +173,7 @@ impl QuickerApp {
             edit_field3: String::new(),
             plugin_draft: LowCodePluginDraft::default(),
             plugin_new_step_idx: 0,
+            edit_target: None,
         }
     }
 
@@ -261,6 +271,7 @@ impl QuickerApp {
         self.edit_field3.clear();
         self.plugin_draft = LowCodePluginDraft::default();
         self.plugin_new_step_idx = 0;
+        self.edit_target = None;
     }
 
     fn global_profile_idx(&self) -> usize {
@@ -315,6 +326,7 @@ impl QuickerApp {
         &self,
         profile_idx: usize,
         section: ActionSection,
+        path: Vec<usize>,
         actions: &[Action],
     ) -> Vec<ActionListEntry> {
         actions
@@ -324,6 +336,7 @@ impl QuickerApp {
             .map(|(action_idx, action)| ActionListEntry {
                 profile_idx,
                 section,
+                path: path.clone(),
                 action_idx,
                 action,
             })
@@ -335,6 +348,7 @@ impl QuickerApp {
             return self.action_entries(
                 scope.profile_idx,
                 scope.section,
+                scope.path.clone(),
                 self.actions_for_scope(scope),
             );
         }
@@ -342,6 +356,7 @@ impl QuickerApp {
         let mut entries = self.action_entries(
             self.global_profile_idx(),
             ActionSection::GlobalTools,
+            Vec::new(),
             self.profile_actions(self.global_profile_idx()),
         );
 
@@ -349,6 +364,7 @@ impl QuickerApp {
             entries.extend(self.action_entries(
                 profile_idx,
                 ActionSection::ActiveWindowTools,
+                Vec::new(),
                 self.profile_actions(profile_idx),
             ));
         }
@@ -369,6 +385,79 @@ impl QuickerApp {
 
         let profile = self.config.profiles.get_mut(profile_idx)?;
         Self::actions_at_path_mut(&mut profile.actions, &path)
+    }
+
+    fn actions_mut_for_target(&mut self, target: &ActionEditTarget) -> Option<&mut Vec<Action>> {
+        let profile = self.config.profiles.get_mut(target.profile_idx)?;
+        Self::actions_at_path_mut(&mut profile.actions, &target.path)
+    }
+
+    fn replace_action(&mut self, target: &ActionEditTarget, action: Action) -> bool {
+        let Some(actions) = self.actions_mut_for_target(target) else {
+            return false;
+        };
+        let Some(slot) = actions.get_mut(target.action_idx) else {
+            return false;
+        };
+        *slot = action;
+        true
+    }
+
+    fn delete_action(&mut self, target: &ActionEditTarget) -> bool {
+        let Some(actions) = self.actions_mut_for_target(target) else {
+            return false;
+        };
+        if target.action_idx >= actions.len() {
+            return false;
+        }
+        actions.remove(target.action_idx);
+        true
+    }
+
+    fn open_plugin_editor_for_entry(&mut self, entry: &ActionListEntry) {
+        let ActionKind::PluginPipeline { plugin } = &entry.action.kind else {
+            return;
+        };
+
+        let draft = match LowCodePluginDraft::from_quicker_plugin_json(&plugin.quicker_json) {
+            Ok(draft) => draft,
+            Err(err) => {
+                self.show_toast(err, true);
+                return;
+            }
+        };
+
+        self.reset_editor();
+        self.edit_kind_idx = 10;
+        self.plugin_draft = draft;
+        self.edit_field1 = plugin.quicker_json.clone();
+        self.edit_target = Some(ActionEditTarget {
+            profile_idx: entry.profile_idx,
+            path: entry.path.clone(),
+            action_idx: entry.action_idx,
+        });
+        self.view = View::ActionEditor;
+    }
+
+    fn persist_edited_or_new_action(&mut self, action: Action) {
+        let message = if let Some(target) = self.edit_target.clone() {
+            if !self.replace_action(&target, action) {
+                self.show_toast("Failed to update action.".into(), true);
+                return;
+            }
+            self.edit_target = None;
+            "Action updated!"
+        } else {
+            if let Some(actions) = self.current_actions_mut() {
+                actions.push(action);
+            }
+            "Action added!"
+        };
+
+        self.config.save();
+        self.show_toast(message.into(), false);
+        self.view = View::Panel;
+        self.needs_focus_profile_sync = true;
     }
 
     fn group_titles(&self) -> Vec<String> {
@@ -1017,6 +1106,8 @@ impl QuickerApp {
     ) {
         let cols = self.config.columns;
         let mut clicked_action: Option<ActionListEntry> = None;
+        let mut edit_action: Option<ActionListEntry> = None;
+        let mut delete_action: Option<ActionEditTarget> = None;
 
         egui::Grid::new(grid_id)
             .num_columns(cols)
@@ -1041,20 +1132,53 @@ impl QuickerApp {
                         _ => format!("{} {}", icon, entry.action.name),
                     };
 
-                    let btn = egui::Button::new(egui::RichText::new(&label).size(14.0))
-                        .min_size(egui::vec2(btn_width, 48.0));
+                    ui.vertical(|ui| {
+                        let btn = egui::Button::new(egui::RichText::new(&label).size(14.0))
+                            .min_size(egui::vec2(btn_width, 48.0));
 
-                    let response = ui.add(btn);
+                        let response = ui.add(btn);
 
-                    if !entry.action.description.is_empty() {
-                        response.clone().on_hover_text(&entry.action.description);
-                    }
+                        if !entry.action.description.is_empty() {
+                            response.clone().on_hover_text(&entry.action.description);
+                        }
 
-                    if response.clicked() {
-                        clicked_action = Some(entry.clone());
-                    }
+                        if response.clicked() {
+                            clicked_action = Some(entry.clone());
+                        }
+
+                        if matches!(entry.action.kind, ActionKind::PluginPipeline { .. }) {
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Edit").clicked() {
+                                    edit_action = Some(entry.clone());
+                                }
+                                if ui.small_button("Delete").clicked() {
+                                    delete_action = Some(ActionEditTarget {
+                                        profile_idx: entry.profile_idx,
+                                        path: entry.path.clone(),
+                                        action_idx: entry.action_idx,
+                                    });
+                                }
+                            });
+                        }
+                    });
                 }
             });
+
+        if let Some(target) = delete_action {
+            if self.delete_action(&target) {
+                self.config.save();
+                self.show_toast("Plugin deleted!".into(), false);
+                self.needs_focus_profile_sync = true;
+            } else {
+                self.show_toast("Failed to delete plugin.".into(), true);
+            }
+            return;
+        }
+
+        if let Some(entry) = edit_action {
+            self.open_plugin_editor_for_entry(&entry);
+            return;
+        }
 
         if let Some(entry) = clicked_action {
             self.trigger_action(
@@ -1215,6 +1339,7 @@ impl QuickerApp {
         let global_entries = self.filtered_entries(&self.action_entries(
             global_profile_idx,
             ActionSection::GlobalTools,
+            Vec::new(),
             self.profile_actions(global_profile_idx),
         ));
 
@@ -1224,6 +1349,7 @@ impl QuickerApp {
                 self.filtered_entries(&self.action_entries(
                     profile_idx,
                     ActionSection::ActiveWindowTools,
+                    Vec::new(),
                     self.profile_actions(profile_idx),
                 ))
             })
@@ -1451,10 +1577,13 @@ impl QuickerApp {
 
         ui.horizontal(|ui| {
             if ui.button("← Cancel").clicked() {
+                self.edit_target = None;
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
             }
-            ui.heading(if is_plugin_editor {
+            ui.heading(if is_plugin_editor && self.edit_target.is_some() {
+                "Edit Plugin"
+            } else if is_plugin_editor {
                 "Add Plugin"
             } else {
                 "Add Action"
@@ -1466,7 +1595,15 @@ impl QuickerApp {
             .id_salt("action_editor_scroll")
             .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(format!("Adding into: {}", self.add_action_target_label()))
+                egui::RichText::new(format!(
+                    "{}: {}",
+                    if self.edit_target.is_some() {
+                        "Editing in"
+                    } else {
+                        "Adding into"
+                    },
+                    self.add_action_target_label()
+                ))
                     .weak()
                     .small(),
             );
@@ -1643,13 +1780,7 @@ impl QuickerApp {
                                 return;
                             }
                         };
-                        if let Some(actions) = self.current_actions_mut() {
-                            actions.push(action);
-                        }
-                        self.config.save();
-                        self.show_toast("Action added!".into(), false);
-                        self.view = View::Panel;
-                        self.needs_focus_profile_sync = true;
+                        self.persist_edited_or_new_action(action);
                         return;
                     }
                     _ => unreachable!(),
@@ -1678,13 +1809,7 @@ impl QuickerApp {
                     kind,
                 };
 
-                if let Some(actions) = self.current_actions_mut() {
-                    actions.push(action);
-                }
-                self.config.save();
-                self.show_toast("Action added!".into(), false);
-                self.view = View::Panel;
-                self.needs_focus_profile_sync = true;
+                self.persist_edited_or_new_action(action);
             }
             });
     }
