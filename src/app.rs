@@ -12,6 +12,8 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::collections::BTreeSet;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const FOCUS_POLL_INTERVAL: Duration = Duration::from_millis(800);
@@ -73,6 +75,11 @@ struct Toast {
     message: String,
     is_error: bool,
     expires: std::time::Instant,
+}
+
+struct ActionExecutionMessage {
+    action_name: String,
+    result: ExecResult,
 }
 
 /// Which screen/view is active.
@@ -140,6 +147,8 @@ pub struct QuickerApp {
     plugin_new_key_macro_step_idx: usize,
     plugin_new_step_idx: usize,
     edit_target: Option<ActionEditTarget>,
+    pending_action_name: Option<String>,
+    action_result_rx: Option<Receiver<ActionExecutionMessage>>,
 }
 
 impl QuickerApp {
@@ -191,6 +200,8 @@ impl QuickerApp {
             plugin_new_key_macro_step_idx: 0,
             plugin_new_step_idx: 0,
             edit_target: None,
+            pending_action_name: None,
+            action_result_rx: None,
         }
     }
 
@@ -217,8 +228,27 @@ impl QuickerApp {
         }
     }
 
-    fn execute_action(&mut self, _ctx: &egui::Context, action: &Action) {
-        self.handle_exec_result(&action.name, action.execute());
+    fn execute_action(&mut self, ctx: &egui::Context, action: &Action) {
+        if let Some(name) = &self.pending_action_name {
+            self.show_toast(format!("Action still running: {name}"), true);
+            return;
+        }
+
+        let action_name = action.name.clone();
+        let action_clone = action.clone();
+        let (tx, rx) = mpsc::channel();
+        let repaint_ctx = ctx.clone();
+        self.pending_action_name = Some(action_name.clone());
+        self.action_result_rx = Some(rx);
+
+        thread::spawn(move || {
+            let result = action_clone.execute();
+            let _ = tx.send(ActionExecutionMessage {
+                action_name,
+                result,
+            });
+            repaint_ctx.request_repaint();
+        });
     }
 
     fn trigger_action(
@@ -2543,9 +2573,35 @@ impl QuickerApp {
                                     .size(14.0),
                             );
                         });
-                });
+            });
             ctx.request_repaint();
         }
+    }
+
+    fn render_running_action(&self, ctx: &egui::Context) {
+        let Some(action_name) = &self.pending_action_name else {
+            return;
+        };
+
+        egui::Area::new(egui::Id::new("running_action"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -20.0))
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(32, 64, 110))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new(format!("Running {action_name}"))
+                                    .color(egui::Color32::WHITE)
+                                    .size(14.0),
+                            );
+                        });
+                    });
+            });
+        ctx.request_repaint();
     }
 
     fn handle_global_hotkey(&mut self, ctx: &egui::Context) {
@@ -2570,6 +2626,29 @@ impl QuickerApp {
     fn show_startup_notice_once(&mut self) {
         if let Some((message, is_error)) = self.startup_notice.take() {
             self.show_toast(message, is_error);
+        }
+    }
+
+    fn poll_action_result(&mut self) {
+        let Some(rx) = &self.action_result_rx else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(message) => {
+                self.pending_action_name = None;
+                self.action_result_rx = None;
+                self.handle_exec_result(&message.action_name, message.result);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                let action_name = self
+                    .pending_action_name
+                    .take()
+                    .unwrap_or_else(|| "Action".into());
+                self.action_result_rx = None;
+                self.show_toast(format!("{action_name} stopped unexpectedly"), true);
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -2631,6 +2710,7 @@ impl eframe::App for QuickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.show_startup_notice_once();
         self.handle_global_hotkey(ctx);
+        self.poll_action_result();
 
         // Handle Escape key
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -2663,6 +2743,7 @@ impl eframe::App for QuickerApp {
 
         self.render_radial_menu(ctx);
         self.render_toast(ctx);
+        self.render_running_action(ctx);
         ctx.request_repaint_after(INPUT_POLL_INTERVAL);
     }
 }

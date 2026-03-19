@@ -3290,6 +3290,9 @@ fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String
         return result;
     }
 
+    const DOWNLOAD_CONNECT_TIMEOUT_SECS: &str = "10";
+    const DOWNLOAD_MAX_TIME_SECS: &str = "60";
+
     let save_dir = normalize_runtime_path(save_dir);
     fs::create_dir_all(&save_dir)
         .map_err(|err| format!("Failed to create download directory '{}': {err}", save_dir))?;
@@ -3300,9 +3303,10 @@ fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String
         .arg("-NoProfile")
         .arg("-Command")
         .arg(format!(
-            "Invoke-WebRequest -Uri {:?} -OutFile {:?}",
+            "Invoke-WebRequest -Uri {:?} -OutFile {:?} -TimeoutSec {}",
             url,
-            target.to_string_lossy().to_string()
+            target.to_string_lossy().to_string(),
+            DOWNLOAD_MAX_TIME_SECS
         ))
         .status()
         .map_err(|err| format!("Failed to download file: {err}"))?;
@@ -3312,6 +3316,10 @@ fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String
         Command::new("curl")
             .arg("-L")
             .arg("-fsS")
+            .arg("--connect-timeout")
+            .arg(DOWNLOAD_CONNECT_TIMEOUT_SECS)
+            .arg("--max-time")
+            .arg(DOWNLOAD_MAX_TIME_SECS)
             .arg(url)
             .arg("-o")
             .arg(&target)
@@ -3319,6 +3327,10 @@ fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String
             .map_err(|err| format!("Failed to download file: {err}"))?
     } else if which::which("wget").is_ok() {
         Command::new("wget")
+            .arg("--timeout")
+            .arg(DOWNLOAD_MAX_TIME_SECS)
+            .arg("--tries")
+            .arg("1")
             .arg("-O")
             .arg(&target)
             .arg(url)
