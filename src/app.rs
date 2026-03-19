@@ -568,7 +568,7 @@ impl QuickerApp {
         ui.label("Quicker plugin JSON:");
         ui.label(
             egui::RichText::new(
-                "Paste a full Quicker action document like sample.json. quicker-rs stores the native JSON and does not use the old step-based plugin flow anymore.",
+                "Paste a full Quicker action document from sample/. quicker-rs stores the native JSON and can run the sample action types 7, 11, and the supported step-based parts of 24.",
             )
             .weak()
             .small(),

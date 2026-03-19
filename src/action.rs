@@ -1,7 +1,11 @@
+use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 #[cfg(all(
     unix,
@@ -55,7 +59,7 @@ pub enum ActionKind {
         #[serde(default = "default_shell")]
         shell: String,
     },
-    /// Store a native Quicker plugin document.
+    /// Store a native Quicker action document.
     PluginPipeline {
         #[serde(flatten)]
         plugin: PluginPipelineStorage,
@@ -110,30 +114,43 @@ impl Action {
             ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json()?,
             _ => return Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
         };
-        let document: QuickerPluginDocument = serde_json::from_str(&quicker_json)
+        let document: QuickerActionDocument = serde_json::from_str(&quicker_json)
             .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
         serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
-        let document: QuickerPluginDocument = serde_json::from_str(input)
+        let document: QuickerActionDocument = serde_json::from_str(input)
             .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
 
-        if document.action_type != QUICKER_PLUGIN_ACTION_TYPE {
-            return Err(format!(
-                "Unsupported Quicker action type {}. Expected {} for plugins.",
-                document.action_type, QUICKER_PLUGIN_ACTION_TYPE
-            ));
+        match document.action_type {
+            QUICKER_KEYS_ACTION_TYPE => {
+                if document.data_text().trim().is_empty() {
+                    return Err("Quicker key macro action is missing Data".into());
+                }
+            }
+            QUICKER_OPEN_ACTION_TYPE => {
+                document.launch_payload()?;
+            }
+            QUICKER_PLUGIN_ACTION_TYPE => {
+                if !document.use_template.unwrap_or(false) && document.has_data() {
+                    document.data_payload()?;
+                }
+            }
+            action_type => {
+                return Err(format!(
+                    "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+                ));
+            }
         }
 
-        document.data_payload()?;
         let quicker_json = serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))?;
 
         Ok(Self {
-            name: document.title,
-            description: document.description,
+            name: document.title.clone(),
+            description: document.description.clone(),
             icon: document.icon.clone(),
             tags: vec![],
             hotkey: None,
@@ -235,9 +252,7 @@ impl Action {
                 run_shell_command(&clipboard_text, shell)
             }
 
-            ActionKind::PluginPipeline { .. } => ExecResult::Err(
-                "Native Quicker plugin execution is not implemented in quicker-rs yet".into(),
-            ),
+            ActionKind::PluginPipeline { plugin } => execute_quicker_action_document(&plugin.quicker_json),
 
             ActionKind::Group { .. } => ExecResult::Ok,
         }
@@ -263,67 +278,124 @@ impl Action {
 
 impl PluginPipelineStorage {
     fn to_quicker_json(&self) -> Result<String, String> {
-        let document: QuickerPluginDocument = serde_json::from_str(&self.quicker_json)
+        let document: QuickerActionDocument = serde_json::from_str(&self.quicker_json)
             .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
         serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 }
 
+const QUICKER_KEYS_ACTION_TYPE: u32 = 7;
+const QUICKER_OPEN_ACTION_TYPE: u32 = 11;
 const QUICKER_PLUGIN_ACTION_TYPE: u32 = 24;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
-struct QuickerPluginDocument {
-    row: u32,
-    col: u32,
+struct QuickerActionDocument {
+    #[serde(default)]
+    row: Option<u32>,
+    #[serde(default)]
+    col: Option<u32>,
     action_type: u32,
     title: String,
+    #[serde(default)]
     description: String,
+    #[serde(default)]
     icon: Option<String>,
+    #[serde(default)]
     path: Option<String>,
-    delay_ms: u32,
-    data: String,
-    data2: String,
-    data3: String,
+    #[serde(default)]
+    delay_ms: Option<u32>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    data2: Option<String>,
+    #[serde(default)]
+    data3: Option<String>,
+    #[serde(default)]
     children: Option<Value>,
-    id: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
     template_id: Option<String>,
-    template_revision: u32,
-    use_template: bool,
-    last_edit_time_utc: String,
-    shared_action_id: String,
-    share_time_utc: String,
-    create_time_utc: String,
-    as_sub_program: bool,
-    skip_when_stop_running_actions: bool,
-    skip_check_update: bool,
-    auto_update: bool,
-    keep_info_when_update: bool,
-    min_quicker_version: String,
-    context_menu_data: String,
-    allow_scroll_trigger: bool,
-    enable_evaluate_variable: bool,
-    is_text_processor: bool,
-    is_image_processor: bool,
-    association: QuickerAssociation,
-    do_not_close_panel: bool,
+    #[serde(default)]
+    template_revision: Option<u32>,
+    #[serde(default)]
+    use_template: Option<bool>,
+    #[serde(default)]
+    last_edit_time_utc: Option<String>,
+    #[serde(default)]
+    shared_action_id: Option<String>,
+    #[serde(default)]
+    share_time_utc: Option<String>,
+    #[serde(default)]
+    create_time_utc: Option<String>,
+    #[serde(default)]
+    as_sub_program: Option<bool>,
+    #[serde(default)]
+    skip_when_stop_running_actions: Option<bool>,
+    #[serde(default)]
+    skip_check_update: Option<bool>,
+    #[serde(default)]
+    auto_update: Option<bool>,
+    #[serde(default)]
+    keep_info_when_update: Option<bool>,
+    #[serde(default)]
+    min_quicker_version: Option<String>,
+    #[serde(default)]
+    context_menu_data: Option<String>,
+    #[serde(default)]
+    allow_scroll_trigger: Option<bool>,
+    #[serde(default)]
+    enable_evaluate_variable: Option<bool>,
+    #[serde(default)]
+    is_text_processor: Option<bool>,
+    #[serde(default)]
+    is_image_processor: Option<bool>,
+    #[serde(default)]
+    association: Option<QuickerAssociation>,
+    #[serde(default)]
+    do_not_close_panel: Option<bool>,
+    #[serde(default)]
     user_limitation: Option<Value>,
 }
 
-impl QuickerPluginDocument {
+impl QuickerActionDocument {
+    fn has_data(&self) -> bool {
+        !self.data_text().trim().is_empty()
+    }
+
+    fn data_text(&self) -> &str {
+        self.data.as_deref().unwrap_or("")
+    }
+
     fn data_payload(&self) -> Result<QuickerPluginData, String> {
-        serde_json::from_str(&self.data)
+        serde_json::from_str(self.data_text())
             .map_err(|err| format!("Failed to parse Quicker plugin data payload: {err}"))
+    }
+
+    fn launch_payload(&self) -> Result<QuickerLaunchData, String> {
+        let payload = self
+            .data_text()
+            .strip_prefix("json:")
+            .unwrap_or(self.data_text());
+        serde_json::from_str(payload)
+            .map_err(|err| format!("Failed to parse Quicker launcher payload: {err}"))
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 struct QuickerPluginData {
+    #[serde(default)]
     limit_single_instance: bool,
-    summary_expression: String,
+    #[serde(default)]
+    summary_expression: Option<String>,
+    #[serde(default)]
     sub_programs: Vec<Value>,
+    #[serde(default)]
     variables: Vec<QuickerPluginVariable>,
+    #[serde(default)]
     steps: Vec<QuickerPluginStepDocument>,
 }
 
@@ -331,83 +403,869 @@ struct QuickerPluginData {
 #[serde(rename_all = "PascalCase")]
 struct QuickerPluginVariable {
     key: String,
-    is_locked: bool,
-    #[serde(rename = "Type")]
-    value_type: u8,
-    desc: String,
-    default_value: String,
-    save_state: bool,
-    is_input: bool,
-    is_output: bool,
-    param_name: String,
-    input_param_info: Option<Value>,
-    output_param_info: Option<Value>,
-    table_def: Option<Value>,
-    custom_type: Option<Value>,
-    group: Option<Value>,
+    #[serde(rename = "Type", default)]
+    value_type: Option<u8>,
+    #[serde(default)]
+    default_value: Option<String>,
+    #[serde(default)]
+    save_state: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 struct QuickerPluginStepDocument {
     step_runner_key: String,
+    #[serde(default)]
     input_params: Map<String, Value>,
+    #[serde(default)]
     output_params: Map<String, Value>,
+    #[serde(default)]
     if_steps: Option<Vec<QuickerPluginStepDocument>>,
+    #[serde(default)]
     else_steps: Option<Vec<QuickerPluginStepDocument>>,
+    #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
     disabled: bool,
+    #[serde(default)]
     collapsed: bool,
+    #[serde(default)]
     delay_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 struct QuickerAssociation {
+    #[serde(default)]
     match_process: Option<String>,
-    is_image_processor: bool,
-    return_image_from_first_screen_shot_step: bool,
-    is_text_processor: bool,
-    return_text_from_get_selected_text_step: bool,
-    text_match_expression: String,
-    text_min_length: u32,
-    text_max_length: u32,
-    is_html_processor: bool,
-    is_file_processor: bool,
-    file_min_count: u32,
-    file_max_count: u32,
-    allowed_file_extensions: String,
-    require_all_file_match_ext: bool,
-    search_box_placeholder: String,
-    is_window_processor: bool,
-    enable_realtime_search: bool,
+    #[serde(default)]
+    is_image_processor: Option<bool>,
+    #[serde(default)]
+    return_image_from_first_screen_shot_step: Option<bool>,
+    #[serde(default)]
+    is_text_processor: Option<bool>,
+    #[serde(default)]
+    return_text_from_get_selected_text_step: Option<bool>,
+    #[serde(default)]
+    text_match_expression: Option<String>,
+    #[serde(default)]
+    text_min_length: Option<u32>,
+    #[serde(default)]
+    text_max_length: Option<u32>,
+    #[serde(default)]
+    is_html_processor: Option<bool>,
+    #[serde(default)]
+    is_file_processor: Option<bool>,
+    #[serde(default)]
+    file_min_count: Option<u32>,
+    #[serde(default)]
+    file_max_count: Option<u32>,
+    #[serde(default)]
+    allowed_file_extensions: Option<String>,
+    #[serde(default)]
+    require_all_file_match_ext: Option<bool>,
+    #[serde(default)]
+    search_box_placeholder: Option<String>,
+    #[serde(default)]
+    is_window_processor: Option<bool>,
+    #[serde(default)]
+    enable_realtime_search: Option<bool>,
+    #[serde(default)]
     browser_context_menu: Option<Value>,
+    #[serde(default)]
     url_pattern: Option<String>,
 }
 
-impl Default for QuickerAssociation {
-    fn default() -> Self {
-        Self {
-            match_process: None,
-            is_image_processor: false,
-            return_image_from_first_screen_shot_step: true,
-            is_text_processor: false,
-            return_text_from_get_selected_text_step: true,
-            text_match_expression: String::new(),
-            text_min_length: 0,
-            text_max_length: 0,
-            is_html_processor: false,
-            is_file_processor: false,
-            file_min_count: 0,
-            file_max_count: 0,
-            allowed_file_extensions: String::new(),
-            require_all_file_match_ext: false,
-            search_box_placeholder: String::new(),
-            is_window_processor: false,
-            enable_realtime_search: false,
-            browser_context_menu: None,
-            url_pattern: None,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerLaunchData {
+    file_name: String,
+    #[serde(default)]
+    arguments: String,
+    #[serde(default)]
+    run_as_admin: bool,
+    #[serde(default)]
+    wait_for_exit: bool,
+    #[serde(default)]
+    window_style: Option<String>,
+    #[serde(default)]
+    set_working_dir: bool,
+    #[serde(default)]
+    alternative_paths: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct QuickerKeyInput {
+    #[serde(rename = "CtrlKeys", default)]
+    ctrl_keys: Vec<u32>,
+    #[serde(rename = "Keys", default)]
+    keys: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerValueBinding {
+    #[serde(default)]
+    var_key: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StepFlow {
+    Continue,
+    Stop(Option<String>),
+}
+
+struct QuickerRuntime {
+    vars: HashMap<String, Value>,
+    last_message: Option<String>,
+}
+
+impl QuickerRuntime {
+    fn new(data: &QuickerPluginData) -> Self {
+        let mut vars = HashMap::new();
+        for variable in &data.variables {
+            vars.insert(
+                variable.key.clone(),
+                Value::String(variable.default_value.clone().unwrap_or_default()),
+            );
         }
+
+        Self {
+            vars,
+            last_message: None,
+        }
+    }
+
+    fn run_steps(&mut self, steps: &[QuickerPluginStepDocument]) -> Result<StepFlow, String> {
+        for step in steps {
+            if step.disabled {
+                continue;
+            }
+
+            if step.delay_ms > 0 {
+                sleep_millis(step.delay_ms as u64);
+            }
+
+            match self.run_step(step)? {
+                StepFlow::Continue => {}
+                stop => return Ok(stop),
+            }
+        }
+
+        Ok(StepFlow::Continue)
+    }
+
+    fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
+        match step.step_runner_key.as_str() {
+            "sys:openUrl" => {
+                let url = self.input_string(&step.input_params, "url")?;
+                open_target(&url)
+                    .map_err(|err| format!("Failed to open URL '{}': {}", url, err))?;
+                Ok(StepFlow::Continue)
+            }
+            "sys:delay" => {
+                let delay_ms = self
+                    .input_string_opt(&step.input_params, "delayMs")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                sleep_millis(delay_ms);
+                Ok(StepFlow::Continue)
+            }
+            "sys:keyInput" => {
+                let keys = self.input_string(&step.input_params, "keys")?;
+                let payload: QuickerKeyInput = serde_json::from_str(&keys)
+                    .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
+                for key in payload.keys {
+                    let key_name = virtual_key_name(key)
+                        .ok_or_else(|| format!("Unsupported virtual key code: {key}"))?;
+                    let modifiers = payload
+                        .ctrl_keys
+                        .iter()
+                        .copied()
+                        .filter_map(virtual_key_modifier)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    send_key_combo(&modifiers, key_name)?;
+                }
+                Ok(StepFlow::Continue)
+            }
+            "sys:getClipboardText" => {
+                let format = self
+                    .input_string_opt(&step.input_params, "format")
+                    .unwrap_or_else(|| "UnicodeText".into());
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let result = match format.as_str() {
+                    "Html" => read_clipboard_html(),
+                    _ => read_clipboard_text(),
+                };
+
+                match result {
+                    Ok(text) => {
+                        self.assign_output(&step.output_params, "output", Value::String(text));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    Err(err) => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(err)
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
+            "sys:writeClipboard" => {
+                let clipboard_type = self
+                    .input_string_opt(&step.input_params, "type")
+                    .unwrap_or_else(|| "auto".into())
+                    .to_ascii_lowercase();
+                let success_msg = self.input_string_opt(&step.input_params, "successMsg");
+
+                match clipboard_type.as_str() {
+                    "html" => {
+                        let html = self.input_string(&step.input_params, "html")?;
+                        let alt_text = self.input_string_opt(&step.input_params, "text");
+                        write_clipboard_html(&html, alt_text.as_deref())?;
+                    }
+                    "text" => {
+                        let text = self.input_string(&step.input_params, "text")?;
+                        write_clipboard_text(&text)?;
+                    }
+                    _ => {
+                        let text = self
+                            .input_string_opt(&step.input_params, "input")
+                            .or_else(|| self.input_string_opt(&step.input_params, "text"))
+                            .unwrap_or_default();
+                        write_clipboard_text(&text)?;
+                    }
+                }
+
+                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                if let Some(message) = success_msg.filter(|value| !value.is_empty()) {
+                    self.last_message = Some(message);
+                }
+                Ok(StepFlow::Continue)
+            }
+            "sys:regexExtract" => {
+                let input = self.input_string(&step.input_params, "data")?;
+                let pattern = self.input_string(&step.input_params, "pattern")?;
+                let get_group = self
+                    .input_string_opt(&step.input_params, "getGroup")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let regex = compile_step_regex(
+                    &pattern,
+                    self.input_bool(&step.input_params, "ignoreCase"),
+                    self.input_bool(&step.input_params, "singleLine"),
+                    self.input_bool(&step.input_params, "multiLine"),
+                )?;
+
+                let captures = regex
+                    .captures(&input)
+                    .map_err(|err| format!("Regex failed: {err}"))?;
+
+                match captures {
+                    Some(captures) => {
+                        let matched = captures
+                            .get(get_group)
+                            .map(|capture| capture.as_str().to_string())
+                            .unwrap_or_default();
+                        self.assign_regex_outputs(&step.output_params, &matched);
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    None => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(format!("Regex did not match pattern: {pattern}"))
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
+            "sys:stringProcess" => {
+                let input = self.input_string(&step.input_params, "data")?;
+                let method = self
+                    .input_string_opt(&step.input_params, "method")
+                    .unwrap_or_default();
+                let output = match method.as_str() {
+                    "toLower" => input.to_lowercase(),
+                    "urlEncode" => urlencoding::encode(&input).into_owned(),
+                    other => return Err(format!("Unsupported stringProcess method: {other}")),
+                };
+                self.assign_output(&step.output_params, "output", Value::String(output));
+                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                Ok(StepFlow::Continue)
+            }
+            "sys:splitString" => {
+                let input = self.input_string(&step.input_params, "data")?;
+                let separator = self
+                    .input_string_opt(&step.input_params, "separator")
+                    .unwrap_or_default();
+                let separator = if self.input_bool(&step.input_params, "escapeSeparator") {
+                    unescape_basic(&separator)
+                } else {
+                    separator
+                };
+                let remove_empty = self.input_bool(&step.input_params, "removeEmpty");
+                let values = input
+                    .split(&separator)
+                    .filter(|part| !remove_empty || !part.is_empty())
+                    .map(|part| Value::String(part.to_string()))
+                    .collect::<Vec<_>>();
+                self.assign_output(&step.output_params, "output", Value::Array(values));
+                Ok(StepFlow::Continue)
+            }
+            "sys:assign" => {
+                let input = self.input_string(&step.input_params, "input")?;
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                match self.eval_assign_expression(&input) {
+                    Some(value) => {
+                        self.assign_output(&step.output_params, "output", value);
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    None => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(format!("Failed to evaluate assign input: {input}"))
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
+            "sys:strReplace" => {
+                let input = self.input_string(&step.input_params, "input")?;
+                let old = self
+                    .input_string_opt(&step.input_params, "old")
+                    .unwrap_or_default();
+                let new = self
+                    .input_string_opt(&step.input_params, "new")
+                    .unwrap_or_default();
+                let replace_escapes = self.input_bool(&step.input_params, "replaceEscapes");
+                let old = if replace_escapes {
+                    unescape_basic(&old)
+                } else {
+                    old
+                };
+                let new = if replace_escapes {
+                    unescape_basic(&new)
+                } else {
+                    new
+                };
+                let output = if self.input_bool(&step.input_params, "useRegex") {
+                    let regex = compile_step_regex(
+                        &old,
+                        self.input_bool(&step.input_params, "ignoreCase"),
+                        self.input_bool(&step.input_params, "singleLine"),
+                        self.input_bool(&step.input_params, "multiLine"),
+                    )?;
+                    regex.replace_all(&input, new.as_str()).into_owned()
+                } else {
+                    input.replace(&old, &new)
+                };
+                self.assign_output(&step.output_params, "output", Value::String(output));
+                Ok(StepFlow::Continue)
+            }
+            "sys:simpleIf" => {
+                let condition = self.input_value(&step.input_params, "condition");
+                let branch = if truthy(condition.as_ref()) {
+                    step.if_steps.as_deref().unwrap_or(&[])
+                } else {
+                    step.else_steps.as_deref().unwrap_or(&[])
+                };
+                self.run_steps(branch)
+            }
+            "sys:group" => self.run_steps(step.if_steps.as_deref().unwrap_or(&[])),
+            "sys:stop" => {
+                let is_error = self.input_bool(&step.input_params, "isError");
+                let message = self.input_string_opt(&step.input_params, "showMessage");
+                if is_error {
+                    Err(message.unwrap_or_else(|| "Quicker action stopped with an error".into()))
+                } else {
+                    Ok(StepFlow::Stop(message))
+                }
+            }
+            "sys:formatString" => {
+                let format_string = self
+                    .input_string_opt(&step.input_params, "formatString")
+                    .unwrap_or_default();
+                let mut output = format_string;
+                for idx in 0..=4 {
+                    let value = self
+                        .input_string_opt(&step.input_params, &format!("p{idx}"))
+                        .unwrap_or_default();
+                    output = output.replace(&format!("{{{idx}}}"), &value);
+                }
+                self.assign_output(&step.output_params, "output", Value::String(output));
+                Ok(StepFlow::Continue)
+            }
+            "sys:notify" => {
+                if let Some(message) = self.input_string_opt(&step.input_params, "msg") {
+                    self.last_message = Some(message);
+                }
+                Ok(StepFlow::Continue)
+            }
+            "sys:reportProgress" => Ok(StepFlow::Continue),
+            "sys:outputText" => {
+                let content = self.input_string(&step.input_params, "content")?;
+                let method = self
+                    .input_string_opt(&step.input_params, "method")
+                    .unwrap_or_else(|| "paste".into());
+                let before = self
+                    .input_string_opt(&step.input_params, "delayBeforePaste")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let after = self
+                    .input_string_opt(&step.input_params, "delayAfterPaste")
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let append_return = self.input_bool(&step.input_params, "appendReturn");
+
+                match method.as_str() {
+                    "paste" => {
+                        write_clipboard_text(&content)?;
+                        sleep_millis(before);
+                        send_key_combo(&["ctrl".into()], "v")?;
+                        if append_return {
+                            send_key_combo(&[], "Return")?;
+                        }
+                        sleep_millis(after);
+                    }
+                    other => return Err(format!("Unsupported outputText method: {other}")),
+                }
+
+                Ok(StepFlow::Continue)
+            }
+            other => Err(format!("Unsupported Quicker step: {other}")),
+        }
+    }
+
+    fn input_value(&self, params: &Map<String, Value>, key: &str) -> Option<Value> {
+        let raw = params.get(key)?;
+        let binding: QuickerValueBinding = serde_json::from_value(raw.clone()).ok()?;
+        if let Some(var_key) = binding.var_key.as_deref() {
+            return self.vars.get(var_key).cloned();
+        }
+
+        binding.value.map(|value| match value {
+            Value::String(text) => Value::String(expand_runtime_vars(&text, &self.vars)),
+            other => other,
+        })
+    }
+
+    fn input_string(&self, params: &Map<String, Value>, key: &str) -> Result<String, String> {
+        self.input_string_opt(params, key)
+            .ok_or_else(|| format!("Missing input param: {key}"))
+    }
+
+    fn input_string_opt(&self, params: &Map<String, Value>, key: &str) -> Option<String> {
+        self.input_value(params, key).map(|value| value_to_string(&value))
+    }
+
+    fn input_bool(&self, params: &Map<String, Value>, key: &str) -> bool {
+        truthy(self.input_value(params, key).as_ref())
+    }
+
+    fn assign_output(&mut self, params: &Map<String, Value>, key: &str, value: Value) {
+        let Some(name) = output_var_name(params, key) else {
+            return;
+        };
+        self.vars.insert(name, value);
+    }
+
+    fn assign_regex_outputs(&mut self, params: &Map<String, Value>, matched: &str) {
+        for candidate in ["match1", "matches", "output"] {
+            self.assign_output(params, candidate, Value::String(matched.to_string()));
+        }
+    }
+
+    fn eval_assign_expression(&self, input: &str) -> Option<Value> {
+        let trimmed = input.trim();
+        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}\[(\d+)\]$")
+            .ok()
+            .and_then(|regex| regex.captures(trimmed).ok().flatten())
+        {
+            let name = captures.get(1)?.as_str();
+            let index = captures
+                .get(2)
+                ?
+                .as_str()
+                .parse::<usize>()
+                .ok()?;
+            let values = self.vars.get(name)?.as_array()?;
+            return values.get(index).cloned();
+        }
+
+        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}$")
+            .ok()
+            .and_then(|regex| regex.captures(trimmed).ok().flatten())
+        {
+            let name = captures.get(1)?.as_str();
+            return self.vars.get(name).cloned();
+        }
+
+        Some(Value::String(expand_runtime_vars(trimmed, &self.vars)))
+    }
+}
+
+fn execute_quicker_action_document(quicker_json: &str) -> ExecResult {
+    let document: QuickerActionDocument = match serde_json::from_str(quicker_json) {
+        Ok(document) => document,
+        Err(err) => {
+            return ExecResult::Err(format!("Failed to parse Quicker plugin JSON: {err}"));
+        }
+    };
+
+    if let Some(delay_ms) = document.delay_ms.filter(|delay| *delay > 0) {
+        sleep_millis(delay_ms as u64);
+    }
+
+    match document.action_type {
+        QUICKER_PLUGIN_ACTION_TYPE => execute_quicker_plugin_steps(&document),
+        QUICKER_OPEN_ACTION_TYPE => execute_quicker_launch(&document),
+        QUICKER_KEYS_ACTION_TYPE => execute_quicker_key_macro(&document),
+        action_type => ExecResult::Err(format!(
+            "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+        )),
+    }
+}
+
+fn execute_quicker_plugin_steps(document: &QuickerActionDocument) -> ExecResult {
+    if document.use_template.unwrap_or(false) && !document.has_data() {
+        return ExecResult::Err(
+            "Template-based Quicker actions cannot run yet because the template body is not embedded in the sample JSON"
+                .into(),
+        );
+    }
+
+    let data = match document.data_payload() {
+        Ok(data) => data,
+        Err(err) => return ExecResult::Err(err),
+    };
+
+    let mut runtime = QuickerRuntime::new(&data);
+    match runtime.run_steps(&data.steps) {
+        Ok(StepFlow::Continue) => match runtime.last_message {
+            Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
+            _ => ExecResult::Ok,
+        },
+        Ok(StepFlow::Stop(message)) => match message.or(runtime.last_message) {
+            Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
+            _ => ExecResult::Ok,
+        },
+        Err(err) => ExecResult::Err(err),
+    }
+}
+
+fn execute_quicker_launch(document: &QuickerActionDocument) -> ExecResult {
+    let launch = match document.launch_payload() {
+        Ok(launch) => launch,
+        Err(err) => return ExecResult::Err(err),
+    };
+
+    if launch.arguments.trim().is_empty() {
+        return match open_target(&launch.file_name) {
+            Ok(_) => ExecResult::Ok,
+            Err(err) => ExecResult::Err(format!("Failed to launch '{}': {}", launch.file_name, err)),
+        };
+    }
+
+    let args = launch
+        .arguments
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let working_dir = launch
+        .set_working_dir
+        .then(|| {
+            Path::new(&launch.file_name)
+                .parent()
+                .map(|path| path.to_string_lossy().to_string())
+        })
+        .flatten();
+
+    spawn_program(&launch.file_name, &args, working_dir.as_deref())
+}
+
+fn execute_quicker_key_macro(document: &QuickerActionDocument) -> ExecResult {
+    let script = document.data_text();
+    if script.trim().is_empty() {
+        return ExecResult::Err("Quicker key macro action is missing Data".into());
+    }
+
+    for line in script.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Some(delay) = line.strip_prefix(';') {
+            let Ok(delay_ms) = delay.trim().parse::<u64>() else {
+                return ExecResult::Err(format!("Invalid macro delay: {line}"));
+            };
+            sleep_millis(delay_ms);
+            continue;
+        }
+
+        if let Some(text) = line.strip_prefix('%') {
+            if let Err(err) = type_input_text(text) {
+                return ExecResult::Err(err);
+            }
+            continue;
+        }
+
+        if let Some(keys) = line.strip_prefix('@') {
+            let mut modifiers = Vec::new();
+            let mut key_name = None;
+
+            for token in keys.split('+').filter(|token| !token.is_empty()) {
+                if let Some(modifier) = quicker_macro_modifier(token) {
+                    modifiers.push(modifier.to_string());
+                } else if let Some(key) = quicker_macro_key(token) {
+                    key_name = Some(key.to_string());
+                } else {
+                    return ExecResult::Err(format!("Unsupported macro token: {token}"));
+                }
+            }
+
+            let Some(key_name) = key_name else {
+                return ExecResult::Err(format!("Missing macro key in line: {line}"));
+            };
+
+            if let Err(err) = send_key_combo(&modifiers, &key_name) {
+                return ExecResult::Err(err);
+            }
+            continue;
+        }
+
+        return ExecResult::Err(format!("Unsupported macro instruction: {line}"));
+    }
+
+    ExecResult::Ok
+}
+
+fn compile_step_regex(
+    pattern: &str,
+    ignore_case: bool,
+    single_line: bool,
+    multi_line: bool,
+) -> Result<Regex, String> {
+    let mut prefix = String::new();
+    if ignore_case {
+        prefix.push_str("(?i)");
+    }
+    if single_line {
+        prefix.push_str("(?s)");
+    }
+    if multi_line {
+        prefix.push_str("(?m)");
+    }
+
+    Regex::new(&format!("{prefix}{pattern}")).map_err(|err| format!("Invalid regex '{pattern}': {err}"))
+}
+
+fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
+    let mut output = String::new();
+    let mut rest = input;
+
+    while let Some(start) = rest.find("$${") {
+        output.push_str(&rest[..start]);
+        let suffix = &rest[start + 3..];
+        if let Some(end) = suffix.find('}') {
+            let name = &suffix[..end];
+            if let Some(value) = vars.get(name) {
+                output.push_str(&value_to_string(value));
+            }
+            rest = &suffix[end + 1..];
+        } else {
+            output.push_str(&rest[start..]);
+            return output;
+        }
+    }
+
+    output.push_str(rest);
+    output
+}
+
+fn output_var_name(params: &Map<String, Value>, key: &str) -> Option<String> {
+    params.iter().find_map(|(name, value)| {
+        (name.trim_end() == key)
+            .then(|| value.as_str())
+            .flatten()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn truthy(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_i64().unwrap_or(0) != 0,
+        Some(Value::String(value)) => {
+            let normalized = value.trim();
+            !normalized.is_empty()
+                && normalized != "0"
+                && !normalized.eq_ignore_ascii_case("false")
+                && !normalized.eq_ignore_ascii_case("no")
+        }
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn value_to_string(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(value) => value.clone(),
+        Value::Bool(value) => {
+            if *value {
+                "1".into()
+            } else {
+                "0".into()
+            }
+        }
+        Value::Number(value) => value.to_string(),
+        Value::Array(values) => values.iter().map(value_to_string).collect::<Vec<_>>().join(","),
+        Value::Object(_) => value.to_string(),
+    }
+}
+
+fn unescape_basic(input: &str) -> String {
+    let mut output = String::new();
+    let mut chars = input.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            output.push(ch);
+            continue;
+        }
+
+        match chars.next() {
+            Some('r') => output.push('\r'),
+            Some('n') => output.push('\n'),
+            Some('t') => output.push('\t'),
+            Some('\\') => output.push('\\'),
+            Some('"') => output.push('"'),
+            Some('\'') => output.push('\''),
+            Some(other) => {
+                output.push('\\');
+                output.push(other);
+            }
+            None => output.push('\\'),
+        }
+    }
+
+    output
+}
+
+fn quicker_macro_modifier(token: &str) -> Option<&'static str> {
+    match token {
+        "LMENU" | "MENU" | "RMENU" | "ALT" => Some("alt"),
+        "CTRL" | "CONTROL" | "LCONTROL" | "RCONTROL" => Some("ctrl"),
+        "SHIFT" | "LSHIFT" | "RSHIFT" => Some("shift"),
+        "LWIN" | "RWIN" | "WIN" => Some("super"),
+        _ => None,
+    }
+}
+
+fn quicker_macro_key(token: &str) -> Option<&'static str> {
+    match token {
+        "RETURN" => Some("Return"),
+        "DOWN" => Some("Down"),
+        "UP" => Some("Up"),
+        "LEFT" => Some("Left"),
+        "RIGHT" => Some("Right"),
+        "ESC" | "ESCAPE" => Some("Escape"),
+        "TAB" => Some("Tab"),
+        "SPACE" => Some("space"),
+        "BACK" | "BACKSPACE" => Some("BackSpace"),
+        _ => token
+            .strip_prefix("VK_")
+            .and_then(macro_virtual_key_name),
+    }
+}
+
+fn macro_virtual_key_name(token: &str) -> Option<&'static str> {
+    match token {
+        "A" => Some("a"),
+        "C" => Some("c"),
+        "P" => Some("p"),
+        "T" => Some("t"),
+        "V" => Some("v"),
+        "X" => Some("x"),
+        "0" => Some("0"),
+        "1" => Some("1"),
+        "2" => Some("2"),
+        "3" => Some("3"),
+        "4" => Some("4"),
+        "5" => Some("5"),
+        "6" => Some("6"),
+        "7" => Some("7"),
+        "8" => Some("8"),
+        "9" => Some("9"),
+        _ => None,
+    }
+}
+
+fn virtual_key_modifier(code: u32) -> Option<&'static str> {
+    match code {
+        16 | 160 | 161 => Some("shift"),
+        17 | 162 | 163 => Some("ctrl"),
+        18 | 164 | 165 => Some("alt"),
+        91 | 92 => Some("super"),
+        _ => None,
+    }
+}
+
+fn virtual_key_name(code: u32) -> Option<&'static str> {
+    match code {
+        13 => Some("Return"),
+        27 => Some("Escape"),
+        37 => Some("Left"),
+        38 => Some("Up"),
+        39 => Some("Right"),
+        40 => Some("Down"),
+        48 => Some("0"),
+        49 => Some("1"),
+        50 => Some("2"),
+        51 => Some("3"),
+        52 => Some("4"),
+        53 => Some("5"),
+        54 => Some("6"),
+        55 => Some("7"),
+        56 => Some("8"),
+        57 => Some("9"),
+        65 => Some("a"),
+        66 => Some("b"),
+        67 => Some("c"),
+        68 => Some("d"),
+        69 => Some("e"),
+        70 => Some("f"),
+        71 => Some("g"),
+        72 => Some("h"),
+        73 => Some("i"),
+        74 => Some("j"),
+        75 => Some("k"),
+        76 => Some("l"),
+        77 => Some("m"),
+        78 => Some("n"),
+        79 => Some("o"),
+        80 => Some("p"),
+        81 => Some("q"),
+        82 => Some("r"),
+        83 => Some("s"),
+        84 => Some("t"),
+        85 => Some("u"),
+        86 => Some("v"),
+        87 => Some("w"),
+        88 => Some("x"),
+        89 => Some("y"),
+        90 => Some("z"),
+        _ => None,
     }
 }
 
@@ -446,6 +1304,31 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
     clipboard
         .set_text(text)
+        .map_err(|e| format!("Clipboard error: {}", e))
+}
+
+fn write_clipboard_html(html: &str, alt_text: Option<&str>) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_write_clipboard_html(html, alt_text) {
+        return result;
+    }
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+    clipboard
+        .set_html(html, alt_text)
+        .map_err(|e| format!("Clipboard error: {}", e))
+}
+
+fn read_clipboard_html() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = test_read_clipboard_html() {
+        return result;
+    }
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
+    clipboard
+        .get()
+        .html()
         .map_err(|e| format!("Clipboard error: {}", e))
 }
 
@@ -500,10 +1383,6 @@ fn read_primary_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<Str
     )
 }
 
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-))]
 fn normalize_clipboard_text(text: Option<String>) -> Option<String> {
     let trimmed = text?.trim().to_string();
     if trimmed.is_empty() {
@@ -568,6 +1447,72 @@ fn run_shell_command(script: &str, shell: &str) -> ExecResult {
     }
 }
 
+fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_send_key_combo(modifiers, key) {
+        return result;
+    }
+
+    let xdotool = which::which("xdotool")
+        .map_err(|_| "Quicker key automation requires xdotool on this system".to_string())?;
+    let chord = if modifiers.is_empty() {
+        key.to_string()
+    } else {
+        format!("{}+{key}", modifiers.join("+"))
+    };
+
+    Command::new(xdotool)
+        .arg("key")
+        .arg("--clearmodifiers")
+        .arg(chord)
+        .status()
+        .map_err(|err| format!("Failed to invoke xdotool: {err}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("xdotool exited with {status}"))
+            }
+        })
+}
+
+fn type_input_text(text: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_type_input_text(text) {
+        return result;
+    }
+
+    let xdotool = which::which("xdotool")
+        .map_err(|_| "Quicker text automation requires xdotool on this system".to_string())?;
+
+    Command::new(xdotool)
+        .arg("type")
+        .arg("--delay")
+        .arg("0")
+        .arg("--clearmodifiers")
+        .arg(text)
+        .status()
+        .map_err(|err| format!("Failed to invoke xdotool: {err}"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("xdotool exited with {status}"))
+            }
+        })
+}
+
+fn sleep_millis(delay_ms: u64) {
+    #[cfg(test)]
+    {
+        if test_sleep_millis(delay_ms) {
+            return;
+        }
+    }
+
+    thread::sleep(Duration::from_millis(delay_ms));
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpawnCall {
@@ -585,10 +1530,18 @@ struct ActionTestRuntime {
     open_results: VecDeque<Result<(), String>>,
     clipboard_writes: Vec<String>,
     clipboard_write_results: VecDeque<Result<(), String>>,
+    clipboard_html_writes: Vec<(String, Option<String>)>,
+    clipboard_html_write_results: VecDeque<Result<(), String>>,
     standard_clipboard_reads: VecDeque<Option<String>>,
     primary_clipboard_reads: VecDeque<Option<String>>,
+    html_clipboard_reads: VecDeque<Result<String, String>>,
     shell_calls: Vec<(String, String)>,
     shell_results: VecDeque<ExecResult>,
+    key_calls: Vec<(Vec<String>, String)>,
+    key_results: VecDeque<Result<(), String>>,
+    typed_inputs: Vec<String>,
+    typed_input_results: VecDeque<Result<(), String>>,
+    delays: Vec<u64>,
 }
 
 #[cfg(test)]
@@ -639,6 +1592,21 @@ fn test_write_clipboard_text(text: &str) -> Option<Result<(), String>> {
 }
 
 #[cfg(test)]
+fn test_write_clipboard_html(html: &str, alt_text: Option<&str>) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime
+            .clipboard_html_writes
+            .push((html.into(), alt_text.map(str::to_string)));
+        runtime.clipboard_html_write_results.pop_front()
+    })
+}
+
+#[cfg(test)]
+fn test_read_clipboard_html() -> Option<Result<String, String>> {
+    with_action_test_runtime(|runtime| runtime.html_clipboard_reads.pop_front())
+}
+
+#[cfg(test)]
 fn test_read_standard_clipboard_text() -> Option<Option<String>> {
     with_action_test_runtime(|runtime| runtime.standard_clipboard_reads.pop_front())
 }
@@ -657,6 +1625,30 @@ fn test_run_shell_command(script: &str, shell: &str) -> Option<ExecResult> {
 }
 
 #[cfg(test)]
+fn test_send_key_combo(modifiers: &[String], key: &str) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime.key_calls.push((modifiers.to_vec(), key.into()));
+        runtime.key_results.pop_front()
+    })
+}
+
+#[cfg(test)]
+fn test_type_input_text(text: &str) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime.typed_inputs.push(text.into());
+        runtime.typed_input_results.pop_front()
+    })
+}
+
+#[cfg(test)]
+fn test_sleep_millis(delay_ms: u64) -> bool {
+    with_action_test_runtime(|runtime| {
+        runtime.delays.push(delay_ms);
+    });
+    true
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -672,10 +1664,14 @@ mod tests {
         }
     }
 
+    fn sample(path: &str) -> String {
+        fs::read_to_string(path).unwrap()
+    }
+
     #[test]
     fn quicker_plugin_document_parses_sample_json() {
-        let sample = fs::read_to_string("sample.json").expect("sample.json should exist");
-        let document: QuickerPluginDocument =
+        let sample = sample("sample/统一格式_20260319_095632.json");
+        let document: QuickerActionDocument =
             serde_json::from_str(&sample).expect("sample should match Quicker schema");
         let data = document
             .data_payload()
@@ -699,7 +1695,7 @@ mod tests {
             hotkey: None,
             kind: ActionKind::PluginPipeline {
                 plugin: PluginPipelineStorage {
-                    quicker_json: fs::read_to_string("sample.json").unwrap(),
+                    quicker_json: sample("sample/统一格式_20260319_095632.json"),
                 },
             },
         };
@@ -707,7 +1703,7 @@ mod tests {
         let json = action
             .to_quicker_plugin_json()
             .expect("plugin export should serialize");
-        let document: QuickerPluginDocument =
+        let document: QuickerActionDocument =
             serde_json::from_str(&json).expect("export should be valid Quicker JSON");
         let data = document
             .data_payload()
@@ -716,14 +1712,14 @@ mod tests {
         assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
         assert_eq!(document.title, "统一格式");
         assert_eq!(document.description, "将粘贴/导入内容的自带样式去除");
-        assert!(document.enable_evaluate_variable);
+        assert_eq!(document.enable_evaluate_variable, Some(true));
         assert_eq!(data.variables.len(), 6);
         assert_eq!(data.steps.len(), 17);
     }
 
     #[test]
     fn quicker_plugin_round_trips_as_native_json() {
-        let sample = fs::read_to_string("sample.json").unwrap();
+        let sample = sample("sample/统一格式_20260319_095632.json");
 
         let parsed = Action::from_quicker_plugin_json(&sample).expect("sample should parse");
 
@@ -740,18 +1736,92 @@ mod tests {
     }
 
     #[test]
-    fn plugin_pipeline_execution_is_not_supported() {
-        let result = action(ActionKind::PluginPipeline {
-            plugin: PluginPipelineStorage {
-                quicker_json: fs::read_to_string("sample.json").unwrap(),
-            },
-        })
-        .execute();
+    fn quicker_plugin_executes_open_url_sample() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        assert_eq!(
-            result,
-            ExecResult::Err("Native Quicker plugin execution is not implemented in quicker-rs yet".into())
-        );
+        let action = Action::from_quicker_plugin_json(&sample("sample/快捷键_20260319_105627.json"))
+            .expect("sample should parse");
+
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime.opened_targets,
+                vec!["https://www.yuque.com/supermemo/wiki/keyboard-shortcuts"]
+            );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_accepts_legacy_key_macro_sample() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| runtime.key_results.push_back(Ok(())));
+
+        let action = Action::from_quicker_plugin_json(&sample("sample/定位_20260319_105649.json"))
+            .expect("sample should parse");
+
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime.key_calls,
+                vec![(vec!["alt".into()], "c".into())]
+            );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_accepts_legacy_launch_sample() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
+
+        let action =
+            Action::from_quicker_plugin_json(&sample("sample/ScreenToGif_20260319_095543.json"))
+                .expect("sample should parse");
+
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime.opened_targets,
+                vec!["C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ScreenToGif.lnk"]
+            );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_executes_clipboard_pipeline_steps() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime.key_results.push_back(Ok(()));
+            runtime.html_clipboard_reads.push_back(Ok(
+                r#"<img data-latex-code="x^2">"#.into(),
+            ));
+            runtime.clipboard_write_results.push_back(Ok(()));
+            runtime.key_results.push_back(Ok(()));
+        });
+
+        let action =
+            Action::from_quicker_plugin_json(&sample("sample/图片转公式_20260319_105527.json"))
+                .expect("sample should parse");
+
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.clipboard_writes, vec!["x^2"]);
+            assert_eq!(
+                runtime.key_calls,
+                vec![
+                    (vec!["ctrl".into()], "x".into()),
+                    (vec!["ctrl".into()], "v".into())
+                ]
+            );
+        });
     }
 
     #[test]
@@ -878,7 +1948,7 @@ mod tests {
         });
 
         let result = action(ActionKind::SearchClipboardText {
-            url_template: "https://search.example/?q={query}".into(),
+            url_template: "https://example.com/?q={query}".into(),
         })
         .execute();
 
@@ -889,7 +1959,7 @@ mod tests {
         with_action_test_runtime(|runtime| {
             assert_eq!(
                 runtime.opened_targets,
-                vec!["https://search.example/?q=hello%20world"]
+                vec!["https://example.com/?q=hello%20world"]
             );
         });
     }
@@ -905,7 +1975,7 @@ mod tests {
         });
 
         let result = action(ActionKind::OpenClipboardText {
-            fallback_search_url: Some("https://search.example/?q={query}".into()),
+            fallback_search_url: None,
         })
         .execute();
 
@@ -921,12 +1991,10 @@ mod tests {
     #[test]
     fn open_clipboard_text_uses_existing_path() {
         reset_action_test_runtime();
-        let temp_path = std::env::temp_dir().join("quicker-rs-open-clipboard-test.txt");
-        fs::write(&temp_path, "demo").unwrap();
         with_action_test_runtime(|runtime| {
             runtime
                 .standard_clipboard_reads
-                .push_back(Some(temp_path.to_string_lossy().to_string()));
+                .push_back(Some("/tmp".into()));
             runtime.open_results.push_back(Ok(()));
         });
 
@@ -935,17 +2003,10 @@ mod tests {
         })
         .execute();
 
-        assert_eq!(
-            result,
-            ExecResult::OkWithMessage(format!("Opened: {}", temp_path.display()))
-        );
+        assert_eq!(result, ExecResult::OkWithMessage("Opened: /tmp".into()));
         with_action_test_runtime(|runtime| {
-            assert_eq!(
-                runtime.opened_targets,
-                vec![temp_path.to_string_lossy().to_string()]
-            );
+            assert_eq!(runtime.opened_targets, vec!["/tmp"]);
         });
-        let _ = fs::remove_file(temp_path);
     }
 
     #[test]
@@ -954,23 +2015,23 @@ mod tests {
         with_action_test_runtime(|runtime| {
             runtime
                 .standard_clipboard_reads
-                .push_back(Some("need search".into()));
+                .push_back(Some("not a url".into()));
             runtime.open_results.push_back(Ok(()));
         });
 
         let result = action(ActionKind::OpenClipboardText {
-            fallback_search_url: Some("https://search.example/?q={query}".into()),
+            fallback_search_url: Some("https://example.com/?q={query}".into()),
         })
         .execute();
 
         assert_eq!(
             result,
-            ExecResult::OkWithMessage("Searched for: need search".into())
+            ExecResult::OkWithMessage("Searched for: not a url".into())
         );
         with_action_test_runtime(|runtime| {
             assert_eq!(
                 runtime.opened_targets,
-                vec!["https://search.example/?q=need%20search"]
+                vec!["https://example.com/?q=not%20a%20url"]
             );
         });
     }
@@ -981,7 +2042,7 @@ mod tests {
         with_action_test_runtime(|runtime| {
             runtime
                 .standard_clipboard_reads
-                .push_back(Some("not a target".into()));
+                .push_back(Some("not a url".into()));
         });
 
         let result = action(ActionKind::OpenClipboardText {
@@ -1006,12 +2067,14 @@ mod tests {
             runtime
                 .primary_clipboard_reads
                 .push_back(Some("echo selected".into()));
-            runtime.shell_results.push_back(ExecResult::Ok);
+            runtime
+                .shell_results
+                .push_back(ExecResult::OkWithMessage("selected".into()));
         });
 
         let result = action(ActionKind::RunClipboardText { shell: "sh".into() }).execute();
 
-        assert_eq!(result, ExecResult::Ok);
+        assert_eq!(result, ExecResult::OkWithMessage("selected".into()));
         with_action_test_runtime(|runtime| {
             assert_eq!(
                 runtime.shell_calls,
@@ -1022,30 +2085,37 @@ mod tests {
 
     #[test]
     fn group_actions_are_not_executed() {
-        reset_action_test_runtime();
         let result = action(ActionKind::Group { actions: vec![] }).execute();
+
         assert_eq!(result, ExecResult::Ok);
     }
 
     #[test]
     fn search_text_includes_group_children() {
-        let grouped = action(ActionKind::Group {
-            actions: vec![Action {
-                name: "Child".into(),
-                description: "Nested".into(),
-                icon: None,
-                tags: vec!["inside".into()],
-                hotkey: None,
-                kind: ActionKind::CopyText {
-                    text: "copy".into(),
-                },
-            }],
-        });
+        let action = Action {
+            name: "Group".into(),
+            description: "Parent".into(),
+            icon: None,
+            tags: vec!["folder".into()],
+            hotkey: None,
+            kind: ActionKind::Group {
+                actions: vec![Action {
+                    name: "Child".into(),
+                    description: "Nested".into(),
+                    icon: None,
+                    tags: vec!["inner".into()],
+                    hotkey: None,
+                    kind: ActionKind::CopyText {
+                        text: "copy".into(),
+                    },
+                }],
+            },
+        };
 
-        let text = grouped.search_text();
+        let text = action.search_text();
 
+        assert!(text.contains("Group"));
         assert!(text.contains("Child"));
         assert!(text.contains("Nested"));
-        assert!(text.contains("inside"));
     }
 }

@@ -45,6 +45,7 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 
 # URL encoding for search actions
 urlencoding = "2"
+fancy-regex = "0.14"
 
 # Focused window / process detection for app-aware profiles
 active-win-pos-rs = "0.10"
