@@ -1,6 +1,4 @@
-use crate::action::{
-    self, Action, ActionKind, ExecResult, PendingPluginRun, PluginRunOutcome, TextPluginStep,
-};
+use crate::action::{Action, ActionKind, ExecResult};
 use crate::config::Config;
 use crate::focus::{self, FocusTracker};
 use crate::search::SearchEngine;
@@ -19,7 +17,6 @@ const RADIAL_INNER_RADIUS: f32 = 108.0;
 const RADIAL_OUTER_RADIUS: f32 = 168.0;
 const RADIAL_SELECTION_PADDING: f32 = 28.0;
 const RADIAL_OVERLAY_MARGIN: f32 = RADIAL_OUTER_RADIUS + 8.0;
-const EXTERNAL_ACTION_DELAY: Duration = Duration::from_millis(80);
 
 #[derive(Clone)]
 struct RadialMenuEntry {
@@ -63,26 +60,6 @@ struct RadialMenuState {
     origin: egui::Pos2,
     pointer: egui::Pos2,
     entries: Vec<RadialMenuEntry>,
-}
-
-struct PluginPromptState {
-    action_name: String,
-    title: String,
-    input: String,
-    pending: PendingPluginRun,
-}
-
-enum DeferredExecution {
-    Action(Action),
-    PluginResume {
-        action_name: String,
-        pending: PendingPluginRun,
-    },
-}
-
-struct DeferredExternalExecution {
-    execute_at: Instant,
-    execution: DeferredExecution,
 }
 
 /// Notification that disappears after a timeout.
@@ -129,9 +106,6 @@ pub struct QuickerApp {
     edit_field1: String, // command / path / url / script / text / template
     edit_field2: String, // args / shell / fallback url
     edit_field3: String, // working_dir
-    edit_plugin_steps: Vec<TextPluginStep>,
-    plugin_prompt: Option<PluginPromptState>,
-    deferred_external_execution: Option<DeferredExternalExecution>,
 }
 
 impl QuickerApp {
@@ -178,9 +152,6 @@ impl QuickerApp {
             edit_field1: String::new(),
             edit_field2: String::new(),
             edit_field3: String::new(),
-            edit_plugin_steps: Vec::new(),
-            plugin_prompt: None,
-            deferred_external_execution: None,
         }
     }
 
@@ -207,128 +178,8 @@ impl QuickerApp {
         }
     }
 
-    fn reveal_panel(&mut self, ctx: &egui::Context) {
-        if self.panel_hidden {
-            self.panel_hidden = false;
-            self.restore_panel_window(ctx);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        }
-    }
-
-    fn action_needs_external_focus(action: &Action) -> bool {
-        match &action.kind {
-            ActionKind::PluginPipeline { steps } => steps
-                .iter()
-                .any(|step| matches!(step, TextPluginStep::WriteSelectedText)),
-            _ => false,
-        }
-    }
-
-    fn pending_run_needs_external_focus(pending: &PendingPluginRun) -> bool {
-        pending.steps[pending.next_step_idx..]
-            .iter()
-            .any(|step| matches!(step, TextPluginStep::WriteSelectedText))
-    }
-
-    fn defer_external_execution(&mut self, ctx: &egui::Context, execution: DeferredExecution) {
-        self.deferred_external_execution = Some(DeferredExternalExecution {
-            execute_at: Instant::now() + EXTERNAL_ACTION_DELAY,
-            execution,
-        });
-        self.panel_hidden = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-    }
-
-    fn run_deferred_external_execution(&mut self, ctx: &egui::Context) {
-        let Some(deferred) = self.deferred_external_execution.take() else {
-            return;
-        };
-
-        match deferred.execution {
-            DeferredExecution::Action(action) => {
-                let outcome = match &action.kind {
-                    ActionKind::PluginPipeline { steps } => action::run_plugin_pipeline(steps),
-                    _ => {
-                        let result = action.execute();
-                        self.reveal_panel(ctx);
-                        self.handle_exec_result(&action.name, result);
-                        return;
-                    }
-                };
-
-                self.reveal_panel(ctx);
-                match outcome {
-                    PluginRunOutcome::Complete(result) => {
-                        self.handle_exec_result(&action.name, result)
-                    }
-                    PluginRunOutcome::NeedsInput { prompt, pending } => {
-                        self.plugin_prompt = Some(PluginPromptState {
-                            action_name: action.name.clone(),
-                            title: prompt.title,
-                            input: prompt.value,
-                            pending,
-                        });
-                    }
-                }
-            }
-            DeferredExecution::PluginResume {
-                action_name,
-                pending,
-            } => {
-                let outcome = action::continue_plugin_pipeline(pending);
-                self.reveal_panel(ctx);
-                match outcome {
-                    PluginRunOutcome::Complete(result) => {
-                        self.handle_exec_result(&action_name, result)
-                    }
-                    PluginRunOutcome::NeedsInput { prompt, pending } => {
-                        self.plugin_prompt = Some(PluginPromptState {
-                            action_name,
-                            title: prompt.title,
-                            input: prompt.value,
-                            pending,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    fn run_plugin_pipeline(&mut self, action_name: &str, pending: PendingPluginRun) {
-        match action::continue_plugin_pipeline(pending) {
-            PluginRunOutcome::Complete(result) => self.handle_exec_result(action_name, result),
-            PluginRunOutcome::NeedsInput { prompt, pending } => {
-                self.plugin_prompt = Some(PluginPromptState {
-                    action_name: action_name.into(),
-                    title: prompt.title,
-                    input: prompt.value,
-                    pending,
-                });
-            }
-        }
-    }
-
-    fn execute_action(&mut self, ctx: &egui::Context, action: &Action) {
-        if Self::action_needs_external_focus(action) {
-            self.defer_external_execution(ctx, DeferredExecution::Action(action.clone()));
-            return;
-        }
-
-        match &action.kind {
-            ActionKind::PluginPipeline { steps } => match action::run_plugin_pipeline(steps) {
-                PluginRunOutcome::Complete(result) => self.handle_exec_result(&action.name, result),
-                PluginRunOutcome::NeedsInput { prompt, pending } => {
-                    self.plugin_prompt = Some(PluginPromptState {
-                        action_name: action.name.clone(),
-                        title: prompt.title,
-                        input: prompt.value,
-                        pending,
-                    });
-                }
-            },
-            _ => self.handle_exec_result(&action.name, action.execute()),
-        }
+    fn execute_action(&mut self, _ctx: &egui::Context, action: &Action) {
+        self.handle_exec_result(&action.name, action.execute());
     }
 
     fn trigger_action(
@@ -396,7 +247,6 @@ impl QuickerApp {
         self.edit_field1.clear();
         self.edit_field2.clear();
         self.edit_field3.clear();
-        self.edit_plugin_steps.clear();
     }
 
     fn global_profile_idx(&self) -> usize {
@@ -714,232 +564,22 @@ impl QuickerApp {
         }
     }
 
-    fn render_plugin_steps_editor(&mut self, ui: &mut egui::Ui) {
-        ui.label("Plugin commands:");
+    fn render_plugin_json_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label("Quicker plugin JSON:");
         ui.label(
             egui::RichText::new(
-                "This plugin currently supports 6 commands. Drag rows to reorder how the plugin runs.",
+                "Paste a full Quicker action document like sample.json. quicker-rs stores the native JSON and does not use the old step-based plugin flow anymore.",
             )
             .weak()
             .small(),
         );
         ui.add_space(6.0);
-
-        ui.columns(2, |columns| {
-            columns[0].group(|ui| {
-                ui.label(egui::RichText::new("Selection").strong());
-                ui.label(
-                    egui::RichText::new("Read text from the selected part.")
-                        .small()
-                        .weak(),
-                );
-                if ui.button("Read Selected Text").clicked() {
-                    self.edit_plugin_steps
-                        .push(TextPluginStep::ReadSelectedText);
-                }
-                if ui.button("Read Clipboard Text").clicked() {
-                    self.edit_plugin_steps
-                        .push(TextPluginStep::ReadClipboardText);
-                }
-            });
-
-            columns[1].group(|ui| {
-                ui.label(egui::RichText::new("Transform").strong());
-                ui.label(
-                    egui::RichText::new("Modify text inside the plugin flow.")
-                        .small()
-                        .weak(),
-                );
-                if ui.button("Uppercase Text").clicked() {
-                    self.edit_plugin_steps.push(TextPluginStep::Uppercase);
-                }
-            });
-        });
-
-        ui.add_space(6.0);
-
-        ui.columns(2, |columns| {
-            columns[0].group(|ui| {
-                ui.label(egui::RichText::new("Output").strong());
-                ui.label(
-                    egui::RichText::new("Write the result to a selection or clipboard.")
-                        .small()
-                        .weak(),
-                );
-                if ui.button("Write Selected Text").clicked() {
-                    self.edit_plugin_steps
-                        .push(TextPluginStep::WriteSelectedText);
-                }
-                if ui.button("Write Clipboard Text").clicked() {
-                    self.edit_plugin_steps
-                        .push(TextPluginStep::WriteClipboardText);
-                }
-            });
-
-            columns[1].group(|ui| {
-                ui.label(egui::RichText::new("Interaction").strong());
-                ui.label(
-                    egui::RichText::new("Ask the user to enter text.")
-                        .small()
-                        .weak(),
-                );
-                if ui.button("Prompt For Input").clicked() {
-                    self.edit_plugin_steps.push(TextPluginStep::PromptInput {
-                        title: "Input".into(),
-                        default_value: String::new(),
-                    });
-                }
-            });
-        });
-
-        ui.add_space(8.0);
-
-        if self.edit_plugin_steps.is_empty() {
-            ui.label(
-                egui::RichText::new(
-                    "Add at least one command. Examples: Read Selected Text -> Uppercase Text -> Write Selected Text, or Read Clipboard Text -> Uppercase Text -> Write Clipboard Text.",
-                )
-                .weak(),
-            );
-            return;
-        }
-
-        let mut move_request = None;
-        let mut delete_request = None;
-        let len = self.edit_plugin_steps.len();
-
-        for idx in 0..len {
-            let id = egui::Id::new(("plugin_step", idx));
-            let frame = egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(12, 10))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(70)));
-            let (inner, dropped) = ui.dnd_drop_zone::<usize, _>(frame, |ui| {
-                ui.dnd_drag_source(id, idx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("⋮⋮").monospace());
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}. {}",
-                                idx + 1,
-                                self.edit_plugin_steps[idx].label()
-                            ))
-                            .strong(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Delete").clicked() {
-                                delete_request = Some(idx);
-                            }
-                        });
-                    });
-
-                    if let TextPluginStep::PromptInput {
-                        title,
-                        default_value,
-                    } = &mut self.edit_plugin_steps[idx]
-                    {
-                        ui.add_space(6.0);
-                        ui.label("Dialog title:");
-                        ui.text_edit_singleline(title);
-                        ui.label("Default value:");
-                        ui.text_edit_singleline(default_value);
-                    }
-                });
-            });
-
-            if inner.response.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-            }
-
-            if let Some(from_idx) = dropped.as_deref().copied() {
-                move_request = Some((from_idx, idx));
-            }
-
-            ui.add_space(6.0);
-        }
-
-        let end_frame = egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::symmetric(12, 10))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(55)));
-        let (_, dropped_at_end) = ui.dnd_drop_zone::<usize, _>(end_frame, |ui| {
-            ui.label(egui::RichText::new("Drop here to move to the end").weak());
-        });
-
-        if let Some(from_idx) = dropped_at_end.as_deref().copied() {
-            move_request = Some((from_idx, self.edit_plugin_steps.len()));
-        }
-
-        if let Some(idx) = delete_request {
-            self.edit_plugin_steps.remove(idx);
-        }
-
-        if let Some((from_idx, to_idx)) = move_request {
-            move_list_item(&mut self.edit_plugin_steps, from_idx, to_idx);
-        }
-    }
-
-    fn render_plugin_prompt(&mut self, ctx: &egui::Context) {
-        let Some(prompt) = &mut self.plugin_prompt else {
-            return;
-        };
-
-        let mut submit = false;
-        let mut cancel = false;
-
-        egui::Window::new(prompt.title.clone())
-            .id(egui::Id::new("plugin_prompt_window"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label("Enter text for this plugin step:");
-                ui.label(
-                    egui::RichText::new(
-                        "This command needs manual input before the plugin can continue.",
-                    )
-                    .small()
-                    .weak(),
-                );
-                let response =
-                    ui.add(egui::TextEdit::singleline(&mut prompt.input).desired_width(320.0));
-                if ui.memory(|memory| memory.focused().is_none()) {
-                    response.request_focus();
-                }
-
-                submit = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                    if ui.button("OK").clicked() {
-                        submit = true;
-                    }
-                });
-            });
-
-        if cancel {
-            self.plugin_prompt = None;
-            self.show_toast("Plugin input cancelled".into(), true);
-            return;
-        }
-
-        if submit {
-            if let Some(mut prompt) = self.plugin_prompt.take() {
-                prompt.pending.current_text = prompt.input;
-                if Self::pending_run_needs_external_focus(&prompt.pending) {
-                    self.defer_external_execution(
-                        ctx,
-                        DeferredExecution::PluginResume {
-                            action_name: prompt.action_name,
-                            pending: prompt.pending,
-                        },
-                    );
-                } else {
-                    self.run_plugin_pipeline(&prompt.action_name, prompt.pending);
-                }
-            }
-        }
+        ui.add(
+            egui::TextEdit::multiline(&mut self.edit_field1)
+                .desired_width(f32::INFINITY)
+                .desired_rows(20)
+                .code_editor(),
+        );
     }
 
     fn render_action_results_grid(
@@ -1405,17 +1045,19 @@ impl QuickerApp {
             );
             ui.add_space(8.0);
 
-            ui.label("Name:");
-            ui.text_edit_singleline(&mut self.edit_name);
+            if !is_plugin_editor {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut self.edit_name);
 
-            ui.label("Description:");
-            ui.text_edit_singleline(&mut self.edit_desc);
+                ui.label("Description:");
+                ui.text_edit_singleline(&mut self.edit_desc);
 
-            ui.label("Icon (emoji):");
-            ui.text_edit_singleline(&mut self.edit_icon);
+                ui.label("Icon (emoji):");
+                ui.text_edit_singleline(&mut self.edit_icon);
 
-            ui.label("Tags (comma-separated):");
-            ui.text_edit_singleline(&mut self.edit_tags);
+                ui.label("Tags (comma-separated):");
+                ui.text_edit_singleline(&mut self.edit_tags);
+            }
 
             ui.add_space(8.0);
             ui.label(if is_plugin_editor { "Item Type:" } else { "Action Type:" });
@@ -1502,11 +1144,11 @@ impl QuickerApp {
                     ui.label("Runs the current clipboard text as a command.");
                 }
                 10 => {
-                    self.render_plugin_steps_editor(ui);
+                    self.render_plugin_json_editor(ui);
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(
-                            "Commands are organized by functionality: Selection, Transform, Output, and Interaction.",
+                            "The plugin title, description, and icon are read from the Quicker JSON itself.",
                         )
                         .weak()
                         .small(),
@@ -1517,7 +1159,7 @@ impl QuickerApp {
 
             ui.add_space(16.0);
 
-            if ui.button("✓ Save Action").clicked() && !self.edit_name.is_empty() {
+            if ui.button("✓ Save Action").clicked() {
                 let kind = match self.edit_kind_idx {
                     0 => ActionKind::RunProgram {
                         command: self.edit_field1.clone(),
@@ -1575,19 +1217,29 @@ impl QuickerApp {
                         },
                     },
                     10 => {
-                        if self.edit_plugin_steps.is_empty() {
-                            self.show_toast(
-                                "Add at least one plugin step before saving.".into(),
-                                true,
-                            );
-                            return;
+                        let action = match Action::from_quicker_plugin_json(&self.edit_field1) {
+                            Ok(action) => action,
+                            Err(err) => {
+                                self.show_toast(err, true);
+                                return;
+                            }
+                        };
+                        if let Some(actions) = self.current_actions_mut() {
+                            actions.push(action);
                         }
-                        ActionKind::PluginPipeline {
-                            steps: self.edit_plugin_steps.clone(),
-                        }
+                        self.config.save();
+                        self.show_toast("Action added!".into(), false);
+                        self.view = View::Panel;
+                        self.needs_focus_profile_sync = true;
+                        return;
                     }
                     _ => unreachable!(),
                 };
+
+                if self.edit_name.is_empty() {
+                    self.show_toast("Name is required.".into(), true);
+                    return;
+                }
 
                 let action = Action {
                     name: self.edit_name.clone(),
@@ -1763,9 +1415,6 @@ impl eframe::App for QuickerApp {
             if self.radial_menu.is_some() {
                 self.cancel_radial_menu(ctx);
                 ctx.request_repaint();
-            } else if self.plugin_prompt.is_some() {
-                self.plugin_prompt = None;
-                self.show_toast("Plugin input cancelled".into(), true);
             } else if self.view != View::Panel {
                 self.view = View::Panel;
                 self.needs_focus_profile_sync = true;
@@ -1779,13 +1428,6 @@ impl eframe::App for QuickerApp {
             self.sync_profile_to_focus();
             self.needs_focus_profile_sync = false;
         }
-        if self
-            .deferred_external_execution
-            .as_ref()
-            .is_some_and(|deferred| Instant::now() >= deferred.execute_at)
-        {
-            self.run_deferred_external_execution(ctx);
-        }
         self.handle_radial_menu_input(ctx);
 
         if !self.panel_hidden {
@@ -1797,7 +1439,6 @@ impl eframe::App for QuickerApp {
             });
         }
 
-        self.render_plugin_prompt(ctx);
         self.render_radial_menu(ctx);
         self.render_toast(ctx);
         ctx.request_repaint_after(INPUT_POLL_INTERVAL);
@@ -1818,21 +1459,6 @@ fn clamp_to_view(value: f32, min: f32, max: f32) -> f32 {
     } else {
         (min + max) * 0.5
     }
-}
-
-fn move_list_item<T>(items: &mut Vec<T>, from_idx: usize, to_idx: usize) {
-    if from_idx >= items.len() || from_idx == to_idx {
-        return;
-    }
-
-    let item = items.remove(from_idx);
-    let insert_idx = if from_idx < to_idx {
-        to_idx.saturating_sub(1)
-    } else {
-        to_idx
-    }
-    .min(items.len());
-    items.insert(insert_idx, item);
 }
 
 fn radial_ring_counts(entry_count: usize) -> (usize, usize) {

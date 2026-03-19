@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::path::Path;
 use std::process::Command;
 
@@ -13,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 /// Represents what happens when an action is triggered.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type")]
 pub enum ActionKind {
     /// Launch a program (with optional arguments)
@@ -54,49 +55,18 @@ pub enum ActionKind {
         #[serde(default = "default_shell")]
         shell: String,
     },
-    /// Run an ordered text-processing pipeline against the current selection
-    PluginPipeline { steps: Vec<TextPluginStep> },
+    /// Store a native Quicker plugin document.
+    PluginPipeline {
+        #[serde(flatten)]
+        plugin: PluginPipelineStorage,
+    },
     /// A group/folder that contains sub-actions
     Group { actions: Vec<Action> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum TextPluginStep {
-    ReadSelectedText,
-    ReadClipboardText,
-    Uppercase,
-    WriteSelectedText,
-    WriteClipboardText,
-    PromptInput {
-        #[serde(default = "default_prompt_title")]
-        title: String,
-        #[serde(default)]
-        default_value: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginPromptRequest {
-    pub title: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPluginRun {
-    pub steps: Vec<TextPluginStep>,
-    pub next_step_idx: usize,
-    pub current_text: String,
-    pub wrote_to_selection: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PluginRunOutcome {
-    Complete(ExecResult),
-    NeedsInput {
-        prompt: PluginPromptRequest,
-        pending: PendingPluginRun,
-    },
+pub struct PluginPipelineStorage {
+    pub quicker_json: String,
 }
 
 fn default_shell() -> String {
@@ -111,12 +81,8 @@ fn default_search_url() -> String {
     "https://www.google.com/search?q={query}".into()
 }
 
-fn default_prompt_title() -> String {
-    "Input".into()
-}
-
 /// A single action in the launcher panel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Action {
     pub name: String,
     #[serde(default)]
@@ -139,6 +105,44 @@ pub enum ExecResult {
 }
 
 impl Action {
+    pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
+        let quicker_json = match &self.kind {
+            ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json()?,
+            _ => return Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
+        };
+        let document: QuickerPluginDocument = serde_json::from_str(&quicker_json)
+            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        serde_json::to_string_pretty(&document)
+            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
+    }
+
+    pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
+        let document: QuickerPluginDocument = serde_json::from_str(input)
+            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+
+        if document.action_type != QUICKER_PLUGIN_ACTION_TYPE {
+            return Err(format!(
+                "Unsupported Quicker action type {}. Expected {} for plugins.",
+                document.action_type, QUICKER_PLUGIN_ACTION_TYPE
+            ));
+        }
+
+        document.data_payload()?;
+        let quicker_json = serde_json::to_string_pretty(&document)
+            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))?;
+
+        Ok(Self {
+            name: document.title,
+            description: document.description,
+            icon: document.icon.clone(),
+            tags: vec![],
+            hotkey: None,
+            kind: ActionKind::PluginPipeline {
+                plugin: PluginPipelineStorage { quicker_json },
+            },
+        })
+    }
+
     /// Execute this action.
     pub fn execute(&self) -> ExecResult {
         match &self.kind {
@@ -231,12 +235,9 @@ impl Action {
                 run_shell_command(&clipboard_text, shell)
             }
 
-            ActionKind::PluginPipeline { steps } => match run_plugin_pipeline(steps) {
-                PluginRunOutcome::Complete(result) => result,
-                PluginRunOutcome::NeedsInput { .. } => ExecResult::Err(
-                    "Plugin pipelines that prompt for input must be run from the UI".into(),
-                ),
-            },
+            ActionKind::PluginPipeline { .. } => ExecResult::Err(
+                "Native Quicker plugin execution is not implemented in quicker-rs yet".into(),
+            ),
 
             ActionKind::Group { .. } => ExecResult::Ok,
         }
@@ -250,8 +251,9 @@ impl Action {
             ActionKind::Group { actions } => {
                 parts.extend(actions.iter().map(Action::search_text));
             }
-            ActionKind::PluginPipeline { steps } => {
-                parts.extend(steps.iter().map(TextPluginStep::search_text));
+            ActionKind::PluginPipeline { plugin } => {
+                parts.push("plugin quicker".into());
+                parts.push(plugin.quicker_json.clone());
             }
             _ => {}
         }
@@ -259,162 +261,154 @@ impl Action {
     }
 }
 
-impl TextPluginStep {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::ReadSelectedText => "Read Selected Text",
-            Self::ReadClipboardText => "Read Clipboard Text",
-            Self::Uppercase => "Uppercase",
-            Self::WriteSelectedText => "Write Into Selected Part",
-            Self::WriteClipboardText => "Write Clipboard Text",
-            Self::PromptInput { .. } => "Prompt For Input",
+impl PluginPipelineStorage {
+    fn to_quicker_json(&self) -> Result<String, String> {
+        let document: QuickerPluginDocument = serde_json::from_str(&self.quicker_json)
+            .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
+        serde_json::to_string_pretty(&document)
+            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
+    }
+}
+
+const QUICKER_PLUGIN_ACTION_TYPE: u32 = 24;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerPluginDocument {
+    row: u32,
+    col: u32,
+    action_type: u32,
+    title: String,
+    description: String,
+    icon: Option<String>,
+    path: Option<String>,
+    delay_ms: u32,
+    data: String,
+    data2: String,
+    data3: String,
+    children: Option<Value>,
+    id: String,
+    template_id: Option<String>,
+    template_revision: u32,
+    use_template: bool,
+    last_edit_time_utc: String,
+    shared_action_id: String,
+    share_time_utc: String,
+    create_time_utc: String,
+    as_sub_program: bool,
+    skip_when_stop_running_actions: bool,
+    skip_check_update: bool,
+    auto_update: bool,
+    keep_info_when_update: bool,
+    min_quicker_version: String,
+    context_menu_data: String,
+    allow_scroll_trigger: bool,
+    enable_evaluate_variable: bool,
+    is_text_processor: bool,
+    is_image_processor: bool,
+    association: QuickerAssociation,
+    do_not_close_panel: bool,
+    user_limitation: Option<Value>,
+}
+
+impl QuickerPluginDocument {
+    fn data_payload(&self) -> Result<QuickerPluginData, String> {
+        serde_json::from_str(&self.data)
+            .map_err(|err| format!("Failed to parse Quicker plugin data payload: {err}"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerPluginData {
+    limit_single_instance: bool,
+    summary_expression: String,
+    sub_programs: Vec<Value>,
+    variables: Vec<QuickerPluginVariable>,
+    steps: Vec<QuickerPluginStepDocument>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerPluginVariable {
+    key: String,
+    is_locked: bool,
+    #[serde(rename = "Type")]
+    value_type: u8,
+    desc: String,
+    default_value: String,
+    save_state: bool,
+    is_input: bool,
+    is_output: bool,
+    param_name: String,
+    input_param_info: Option<Value>,
+    output_param_info: Option<Value>,
+    table_def: Option<Value>,
+    custom_type: Option<Value>,
+    group: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerPluginStepDocument {
+    step_runner_key: String,
+    input_params: Map<String, Value>,
+    output_params: Map<String, Value>,
+    if_steps: Option<Vec<QuickerPluginStepDocument>>,
+    else_steps: Option<Vec<QuickerPluginStepDocument>>,
+    note: Option<String>,
+    disabled: bool,
+    collapsed: bool,
+    delay_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+struct QuickerAssociation {
+    match_process: Option<String>,
+    is_image_processor: bool,
+    return_image_from_first_screen_shot_step: bool,
+    is_text_processor: bool,
+    return_text_from_get_selected_text_step: bool,
+    text_match_expression: String,
+    text_min_length: u32,
+    text_max_length: u32,
+    is_html_processor: bool,
+    is_file_processor: bool,
+    file_min_count: u32,
+    file_max_count: u32,
+    allowed_file_extensions: String,
+    require_all_file_match_ext: bool,
+    search_box_placeholder: String,
+    is_window_processor: bool,
+    enable_realtime_search: bool,
+    browser_context_menu: Option<Value>,
+    url_pattern: Option<String>,
+}
+
+impl Default for QuickerAssociation {
+    fn default() -> Self {
+        Self {
+            match_process: None,
+            is_image_processor: false,
+            return_image_from_first_screen_shot_step: true,
+            is_text_processor: false,
+            return_text_from_get_selected_text_step: true,
+            text_match_expression: String::new(),
+            text_min_length: 0,
+            text_max_length: 0,
+            is_html_processor: false,
+            is_file_processor: false,
+            file_min_count: 0,
+            file_max_count: 0,
+            allowed_file_extensions: String::new(),
+            require_all_file_match_ext: false,
+            search_box_placeholder: String::new(),
+            is_window_processor: false,
+            enable_realtime_search: false,
+            browser_context_menu: None,
+            url_pattern: None,
         }
     }
-
-    pub fn search_text(&self) -> String {
-        match self {
-            Self::PromptInput {
-                title,
-                default_value,
-            } => {
-                format!("{} {} {}", self.label(), title, default_value)
-            }
-            _ => self.label().into(),
-        }
-    }
-}
-
-pub fn run_plugin_pipeline(steps: &[TextPluginStep]) -> PluginRunOutcome {
-    continue_plugin_pipeline(PendingPluginRun {
-        steps: steps.to_vec(),
-        next_step_idx: 0,
-        current_text: String::new(),
-        wrote_to_selection: false,
-    })
-}
-
-pub fn continue_plugin_pipeline(mut pending: PendingPluginRun) -> PluginRunOutcome {
-    while let Some(step) = pending.steps.get(pending.next_step_idx).cloned() {
-        pending.next_step_idx += 1;
-
-        match step {
-            TextPluginStep::ReadSelectedText => match read_selected_text() {
-                Ok(text) => pending.current_text = text,
-                Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
-            },
-            TextPluginStep::ReadClipboardText => match read_explicit_clipboard_text() {
-                Ok(text) => pending.current_text = text,
-                Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
-            },
-            TextPluginStep::Uppercase => {
-                pending.current_text = pending.current_text.to_uppercase();
-            }
-            TextPluginStep::WriteSelectedText => {
-                if pending.current_text.is_empty() {
-                    return PluginRunOutcome::Complete(ExecResult::Err(
-                        "No text is available to write. Add a read or prompt step first.".into(),
-                    ));
-                }
-
-                match write_text_into_selection(&pending.current_text) {
-                    Ok(()) => pending.wrote_to_selection = true,
-                    Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
-                }
-            }
-            TextPluginStep::WriteClipboardText => {
-                match write_clipboard_text(&pending.current_text) {
-                    Ok(()) => {}
-                    Err(err) => return PluginRunOutcome::Complete(ExecResult::Err(err)),
-                }
-            }
-            TextPluginStep::PromptInput {
-                title,
-                default_value,
-            } => {
-                let value = if pending.current_text.is_empty() {
-                    default_value
-                } else {
-                    pending.current_text.clone()
-                };
-                return PluginRunOutcome::NeedsInput {
-                    prompt: PluginPromptRequest { title, value },
-                    pending,
-                };
-            }
-        }
-    }
-
-    let result = if pending.wrote_to_selection {
-        ExecResult::OkWithMessage(
-            "Plugin pipeline finished and wrote into the selected part".into(),
-        )
-    } else if pending
-        .steps
-        .iter()
-        .any(|step| matches!(step, TextPluginStep::WriteClipboardText))
-    {
-        ExecResult::OkWithMessage("Plugin pipeline finished and wrote to the clipboard".into())
-    } else if pending.current_text.trim().is_empty() {
-        ExecResult::OkWithMessage("Plugin pipeline finished".into())
-    } else {
-        ExecResult::OkWithMessage(pending.current_text)
-    };
-
-    PluginRunOutcome::Complete(result)
-}
-
-pub fn read_selected_text() -> Result<String, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-
-    #[cfg(all(
-        unix,
-        not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-    ))]
-    {
-        if let Some(text) = read_primary_clipboard_text(&mut clipboard) {
-            return Ok(text);
-        }
-    }
-
-    if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
-        return Ok(text);
-    }
-
-    Err(
-        "No selected text was found. On Linux, select text first before triggering the plugin."
-            .into(),
-    )
-}
-
-pub fn read_explicit_clipboard_text() -> Result<String, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-
-    if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
-        return Ok(text);
-    }
-
-    Err("No clipboard text was found. Copy text first before triggering the plugin.".into())
-}
-
-pub fn write_text_into_selection(text: &str) -> Result<(), String> {
-    #[cfg(test)]
-    if let Some(result) = test_write_text_into_selection(text) {
-        return result;
-    }
-
-    let mut backend_errors = Vec::new();
-
-    if try_type_with_command("wtype", &[], text, &mut backend_errors).is_ok()
-        || try_xdotool_type(text, &mut backend_errors).is_ok()
-    {
-        return Ok(());
-    }
-
-    write_clipboard_text(text)?;
-    Err(format!(
-        "Copied text to the clipboard, but automatic typing failed. {}",
-        backend_errors.join(" ")
-    ))
 }
 
 fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> ExecResult {
@@ -476,60 +470,6 @@ fn read_clipboard_text() -> Result<String, String> {
         "No usable text was found in the clipboard. On Linux, select text first or copy it explicitly."
             .into(),
     )
-}
-
-fn try_type_with_command(
-    command: &str,
-    prefix_args: &[&str],
-    text: &str,
-    backend_errors: &mut Vec<String>,
-) -> Result<(), ()> {
-    match Command::new(command).args(prefix_args).arg(text).output() {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else if !stdout.is_empty() {
-                stdout
-            } else {
-                format!("exited with status {}", output.status)
-            };
-            backend_errors.push(format!("{command}: {detail}."));
-            Err(())
-        }
-        Err(err) => {
-            backend_errors.push(format!("{command}: {err}."));
-            Err(())
-        }
-    }
-}
-
-fn try_xdotool_type(text: &str, backend_errors: &mut Vec<String>) -> Result<(), ()> {
-    match Command::new("xdotool")
-        .args(["type", "--clearmodifiers", "--delay", "0", "--", text])
-        .output()
-    {
-        Ok(output) if output.status.success() => Ok(()),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else if !stdout.is_empty() {
-                stdout
-            } else {
-                format!("exited with status {}", output.status)
-            };
-            backend_errors.push(format!("xdotool: {detail}."));
-            Err(())
-        }
-        Err(err) => {
-            backend_errors.push(format!("xdotool: {err}."));
-            Err(())
-        }
-    }
 }
 
 fn read_standard_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<String> {
@@ -649,8 +589,6 @@ struct ActionTestRuntime {
     primary_clipboard_reads: VecDeque<Option<String>>,
     shell_calls: Vec<(String, String)>,
     shell_results: VecDeque<ExecResult>,
-    selection_writes: Vec<String>,
-    selection_write_results: VecDeque<Result<(), String>>,
 }
 
 #[cfg(test)]
@@ -719,14 +657,6 @@ fn test_run_shell_command(script: &str, shell: &str) -> Option<ExecResult> {
 }
 
 #[cfg(test)]
-fn test_write_text_into_selection(text: &str) -> Option<Result<(), String>> {
-    with_action_test_runtime(|runtime| {
-        runtime.selection_writes.push(text.into());
-        runtime.selection_write_results.pop_front()
-    })
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
@@ -740,6 +670,88 @@ mod tests {
             hotkey: None,
             kind,
         }
+    }
+
+    #[test]
+    fn quicker_plugin_document_parses_sample_json() {
+        let sample = fs::read_to_string("sample.json").expect("sample.json should exist");
+        let document: QuickerPluginDocument =
+            serde_json::from_str(&sample).expect("sample should match Quicker schema");
+        let data = document
+            .data_payload()
+            .expect("sample data payload should parse");
+
+        assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
+        assert_eq!(document.title, "统一格式");
+        assert_eq!(data.variables.len(), 6);
+        assert_eq!(data.steps.len(), 17);
+        assert_eq!(data.steps[0].step_runner_key, "sys:keyInput");
+        assert_eq!(data.steps.last().unwrap().step_runner_key, "sys:keyInput");
+    }
+
+    #[test]
+    fn plugin_pipeline_exports_quicker_json_with_sample_shape() {
+        let action = Action {
+            name: "Clipboard Uppercase".into(),
+            description: "Uppercase clipboard text".into(),
+            icon: Some("icon.png".into()),
+            tags: vec!["plugin".into()],
+            hotkey: None,
+            kind: ActionKind::PluginPipeline {
+                plugin: PluginPipelineStorage {
+                    quicker_json: fs::read_to_string("sample.json").unwrap(),
+                },
+            },
+        };
+
+        let json = action
+            .to_quicker_plugin_json()
+            .expect("plugin export should serialize");
+        let document: QuickerPluginDocument =
+            serde_json::from_str(&json).expect("export should be valid Quicker JSON");
+        let data = document
+            .data_payload()
+            .expect("exported data payload should parse");
+
+        assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
+        assert_eq!(document.title, "统一格式");
+        assert_eq!(document.description, "将粘贴/导入内容的自带样式去除");
+        assert!(document.enable_evaluate_variable);
+        assert_eq!(data.variables.len(), 6);
+        assert_eq!(data.steps.len(), 17);
+    }
+
+    #[test]
+    fn quicker_plugin_round_trips_as_native_json() {
+        let sample = fs::read_to_string("sample.json").unwrap();
+
+        let parsed = Action::from_quicker_plugin_json(&sample).expect("sample should parse");
+
+        assert_eq!(parsed.name, "统一格式");
+        assert_eq!(parsed.description, "将粘贴/导入内容的自带样式去除");
+        assert_eq!(parsed.icon.as_deref(), Some("https://files.getquicker.net/_icons/2D62F4E62FD40AC3F99CB7ABE05B9E2FAE141A3B.png"));
+        assert_eq!(
+            parsed.to_quicker_plugin_json().unwrap(),
+            Action::from_quicker_plugin_json(&sample)
+                .unwrap()
+                .to_quicker_plugin_json()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn plugin_pipeline_execution_is_not_supported() {
+        let result = action(ActionKind::PluginPipeline {
+            plugin: PluginPipelineStorage {
+                quicker_json: fs::read_to_string("sample.json").unwrap(),
+            },
+        })
+        .execute();
+
+        assert_eq!(
+            result,
+            ExecResult::Err("Native Quicker plugin execution is not implemented in quicker-rs yet".into())
+        );
     }
 
     #[test]
@@ -1013,130 +1025,6 @@ mod tests {
         reset_action_test_runtime();
         let result = action(ActionKind::Group { actions: vec![] }).execute();
         assert_eq!(result, ExecResult::Ok);
-    }
-
-    #[test]
-    fn plugin_pipeline_reads_uppercases_and_writes_selected_text() {
-        reset_action_test_runtime();
-        with_action_test_runtime(|runtime| {
-            runtime
-                .primary_clipboard_reads
-                .push_back(Some("hello world".into()));
-            runtime.selection_write_results.push_back(Ok(()));
-        });
-
-        let result = run_plugin_pipeline(&[
-            TextPluginStep::ReadSelectedText,
-            TextPluginStep::Uppercase,
-            TextPluginStep::WriteSelectedText,
-        ]);
-
-        assert_eq!(
-            result,
-            PluginRunOutcome::Complete(ExecResult::OkWithMessage(
-                "Plugin pipeline finished and wrote into the selected part".into()
-            ))
-        );
-        with_action_test_runtime(|runtime| {
-            assert_eq!(runtime.selection_writes, vec!["HELLO WORLD"]);
-        });
-    }
-
-    #[test]
-    fn plugin_pipeline_pauses_for_input_and_resumes() {
-        reset_action_test_runtime();
-
-        let paused = run_plugin_pipeline(&[
-            TextPluginStep::PromptInput {
-                title: "Enter text".into(),
-                default_value: "seed".into(),
-            },
-            TextPluginStep::Uppercase,
-        ]);
-
-        let (prompt, pending) = match paused {
-            PluginRunOutcome::NeedsInput { prompt, pending } => (prompt, pending),
-            other => panic!("unexpected outcome: {other:?}"),
-        };
-
-        assert_eq!(
-            prompt,
-            PluginPromptRequest {
-                title: "Enter text".into(),
-                value: "seed".into(),
-            }
-        );
-
-        let resumed = continue_plugin_pipeline(PendingPluginRun {
-            current_text: "hello".into(),
-            ..pending
-        });
-
-        assert_eq!(
-            resumed,
-            PluginRunOutcome::Complete(ExecResult::OkWithMessage("HELLO".into()))
-        );
-    }
-
-    #[test]
-    fn plugin_pipeline_reads_uppercases_and_writes_clipboard_text() {
-        reset_action_test_runtime();
-        with_action_test_runtime(|runtime| {
-            runtime
-                .standard_clipboard_reads
-                .push_back(Some("hello clip".into()));
-            runtime.clipboard_write_results.push_back(Ok(()));
-        });
-
-        let result = run_plugin_pipeline(&[
-            TextPluginStep::ReadClipboardText,
-            TextPluginStep::Uppercase,
-            TextPluginStep::WriteClipboardText,
-        ]);
-
-        assert_eq!(
-            result,
-            PluginRunOutcome::Complete(ExecResult::OkWithMessage(
-                "Plugin pipeline finished and wrote to the clipboard".into()
-            ))
-        );
-        with_action_test_runtime(|runtime| {
-            assert_eq!(runtime.clipboard_writes, vec!["HELLO CLIP"]);
-        });
-    }
-
-    #[test]
-    fn read_selected_text_prefers_primary_selection_over_clipboard() {
-        reset_action_test_runtime();
-        with_action_test_runtime(|runtime| {
-            runtime
-                .standard_clipboard_reads
-                .push_back(Some("clipboard text".into()));
-            runtime
-                .primary_clipboard_reads
-                .push_back(Some("selected text".into()));
-        });
-
-        let result = read_selected_text();
-
-        assert_eq!(result, Ok("selected text".into()));
-    }
-
-    #[test]
-    fn read_explicit_clipboard_text_uses_standard_clipboard_only() {
-        reset_action_test_runtime();
-        with_action_test_runtime(|runtime| {
-            runtime
-                .standard_clipboard_reads
-                .push_back(Some("clipboard only".into()));
-            runtime
-                .primary_clipboard_reads
-                .push_back(Some("selection".into()));
-        });
-
-        let result = read_explicit_clipboard_text();
-
-        assert_eq!(result, Ok("clipboard only".into()));
     }
 
     #[test]
