@@ -1841,10 +1841,12 @@ enum StepFlow {
 struct QuickerRuntime {
     vars: HashMap<String, Value>,
     last_message: Option<String>,
+    state_scope: String,
+    action_state: HashMap<String, String>,
 }
 
 impl QuickerRuntime {
-    fn new(data: &QuickerPluginData) -> Self {
+    fn new(data: &QuickerPluginData, state_scope: String) -> Self {
         let mut vars = HashMap::new();
         for variable in &data.variables {
             vars.insert(
@@ -1852,10 +1854,13 @@ impl QuickerRuntime {
                 Value::String(variable.default_value.clone().unwrap_or_default()),
             );
         }
+        let action_state = load_action_state_scope(&state_scope);
 
         Self {
             vars,
             last_message: None,
+            state_scope,
+            action_state,
         }
     }
 
@@ -1885,6 +1890,39 @@ impl QuickerRuntime {
                 open_target(&url)
                     .map_err(|err| format!("Failed to open URL '{}': {}", url, err))?;
                 Ok(StepFlow::Continue)
+            }
+            "sys:stateStorage" => {
+                let mode = self
+                    .input_string_opt(&step.input_params, "type")
+                    .unwrap_or_default();
+                let key = self.input_string(&step.input_params, "key")?;
+                match mode.as_str() {
+                    "readActionState" => {
+                        let default_value = self
+                            .input_string_opt(&step.input_params, "defaultValue")
+                            .unwrap_or_default();
+                        let value = self
+                            .action_state
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or(default_value);
+                        let is_empty = value.trim().is_empty();
+                        self.assign_output(&step.output_params, "value", Value::String(value));
+                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    "saveActionState" => {
+                        let value = self
+                            .input_string_opt(&step.input_params, "value")
+                            .unwrap_or_default();
+                        self.action_state.insert(key.clone(), value.clone());
+                        save_action_state_scope(&self.state_scope, &self.action_state)?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    other => Err(format!("Unsupported stateStorage type: {other}")),
+                }
             }
             "sys:delay" => {
                 let delay_ms = self
@@ -2271,7 +2309,11 @@ fn execute_quicker_plugin_steps(document: &QuickerActionDocument) -> ExecResult 
         Err(err) => return ExecResult::Err(err),
     };
 
-    let mut runtime = QuickerRuntime::new(&data);
+    let state_scope = document
+        .id
+        .clone()
+        .unwrap_or_else(|| document.title.clone());
+    let mut runtime = QuickerRuntime::new(&data, state_scope);
     match runtime.run_steps(&data.steps) {
         Ok(StepFlow::Continue) => match runtime.last_message {
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
@@ -2723,6 +2765,49 @@ fn read_primary_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<Str
     )
 }
 
+type ActionStateStore = HashMap<String, HashMap<String, String>>;
+
+fn action_state_store_path() -> std::path::PathBuf {
+    let dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("quicker-rs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("action_state.json")
+}
+
+fn load_action_state_scope(scope: &str) -> HashMap<String, String> {
+    #[cfg(test)]
+    if let Some(state) = test_load_action_state_scope(scope) {
+        return state;
+    }
+
+    let path = action_state_store_path();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return HashMap::new();
+    };
+    let Ok(store) = serde_json::from_str::<ActionStateStore>(&content) else {
+        return HashMap::new();
+    };
+    store.get(scope).cloned().unwrap_or_default()
+}
+
+fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Result<(), String> {
+    #[cfg(test)]
+    if test_save_action_state_scope(scope, state) {
+        return Ok(());
+    }
+
+    let path = action_state_store_path();
+    let mut store = match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str::<ActionStateStore>(&content).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    };
+    store.insert(scope.to_string(), state.clone());
+    let content = serde_json::to_string_pretty(&store)
+        .map_err(|err| format!("Failed to serialize action state store: {err}"))?;
+    std::fs::write(&path, content).map_err(|err| format!("Failed to save action state store: {err}"))
+}
+
 fn normalize_clipboard_text(text: Option<String>) -> Option<String> {
     let trimmed = text?.trim().to_string();
     if trimmed.is_empty() {
@@ -2940,6 +3025,7 @@ struct ActionTestRuntime {
     typed_inputs: Vec<String>,
     typed_input_results: VecDeque<Result<(), String>>,
     delays: Vec<u64>,
+    action_state_store: ActionStateStore,
 }
 
 #[cfg(test)]
@@ -3042,6 +3128,27 @@ fn test_type_input_text(text: &str) -> Option<Result<(), String>> {
 fn test_sleep_millis(delay_ms: u64) -> bool {
     with_action_test_runtime(|runtime| {
         runtime.delays.push(delay_ms);
+    });
+    true
+}
+
+#[cfg(test)]
+fn test_load_action_state_scope(scope: &str) -> Option<HashMap<String, String>> {
+    Some(with_action_test_runtime(|runtime| {
+        runtime
+            .action_state_store
+            .get(scope)
+            .cloned()
+            .unwrap_or_default()
+    }))
+}
+
+#[cfg(test)]
+fn test_save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> bool {
+    with_action_test_runtime(|runtime| {
+        runtime
+            .action_state_store
+            .insert(scope.to_string(), state.clone());
     });
     true
 }
@@ -3218,6 +3325,41 @@ mod tests {
                     (vec!["ctrl".into()], "x".into()),
                     (vec!["ctrl".into()], "v".into())
                 ]
+            );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_executes_state_storage_steps() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime.action_state_store.insert(
+                "state-demo".into(),
+                HashMap::from([("path".into(), "/tmp/demo".into())]),
+            );
+        });
+
+        let sample = r#"{
+          "ActionType": 24,
+          "Title": "State Demo",
+          "Description": "",
+          "Icon": null,
+          "Id": "state-demo",
+          "Data": "{\"LimitSingleInstance\":false,\"SummaryExpression\":\"\",\"SubPrograms\":[],\"Variables\":[{\"Key\":\"path\",\"Type\":0,\"DefaultValue\":\"\",\"SaveState\":false},{\"Key\":\"is_empty\",\"Type\":2,\"DefaultValue\":\"\",\"SaveState\":false}],\"Steps\":[{\"StepRunnerKey\":\"sys:stateStorage\",\"InputParams\":{\"type\":{\"VarKey\":null,\"Value\":\"readActionState\"},\"key\":{\"VarKey\":null,\"Value\":\"path\"},\"defaultValue\":{\"VarKey\":null,\"Value\":\"fallback\"}},\"OutputParams\":{\"value\":\"path\",\"isEmpty\":\"is_empty\"},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0},{\"StepRunnerKey\":\"sys:stateStorage\",\"InputParams\":{\"type\":{\"VarKey\":null,\"Value\":\"saveActionState\"},\"key\":{\"VarKey\":null,\"Value\":\"path\"},\"value\":{\"VarKey\":null,\"Value\":\"/tmp/updated\"}},\"OutputParams\":{},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0}]}"
+        }"#;
+
+        let action = Action::from_quicker_plugin_json(sample).expect("sample should parse");
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(
+                runtime
+                    .action_state_store
+                    .get("state-demo")
+                    .and_then(|scope| scope.get("path"))
+                    .map(String::as_str),
+                Some("/tmp/updated")
             );
         });
     }
