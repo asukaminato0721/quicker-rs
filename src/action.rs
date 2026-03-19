@@ -3,6 +3,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -1924,6 +1926,61 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported stateStorage type: {other}")),
                 }
             }
+            "sys:MsgBox" => {
+                let title = self.input_string_opt(&step.input_params, "title").unwrap_or_default();
+                let message = self.input_string(&step.input_params, "message")?;
+                show_message_box(&title, &message)?;
+                self.assign_output(&step.output_params, "okOrYes", Value::Bool(true));
+                Ok(StepFlow::Continue)
+            }
+            "sys:selectFolder" => {
+                let prompt = self.input_string_opt(&step.input_params, "prompt").unwrap_or_default();
+                let init_dir = self.input_string_opt(&step.input_params, "initDir");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                match select_folder_dialog(&prompt, init_dir.as_deref()) {
+                    Ok(path) => {
+                        self.assign_output(&step.output_params, "path", Value::String(path));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    Err(err) => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(err)
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
+            "sys:userInput" => {
+                let prompt = self.input_string_opt(&step.input_params, "prompt").unwrap_or_default();
+                let default_value = self
+                    .input_string_opt(&step.input_params, "defaultValue")
+                    .unwrap_or_default();
+                let multiline = matches!(
+                    self.input_string_opt(&step.input_params, "type").as_deref(),
+                    Some("multiline")
+                );
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                match prompt_user_input_dialog(&prompt, &default_value, multiline) {
+                    Ok(text) => {
+                        let is_empty = text.trim().is_empty();
+                        self.assign_output(&step.output_params, "textValue", Value::String(text));
+                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        Ok(StepFlow::Continue)
+                    }
+                    Err(err) => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(err)
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
             "sys:delay" => {
                 let delay_ms = self
                     .input_string_opt(&step.input_params, "delayMs")
@@ -2060,6 +2117,121 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "output", Value::String(output));
                 self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
                 Ok(StepFlow::Continue)
+            }
+            "sys:download" => {
+                let url = self.input_string(&step.input_params, "url")?;
+                let save_path = self.input_string(&step.input_params, "savePath")?;
+                let save_name = self.input_string(&step.input_params, "saveName")?;
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                match download_to_file(&url, &save_path, &save_name) {
+                    Ok(saved_path) => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(
+                            &step.output_params,
+                            "savedPath",
+                            Value::String(saved_path),
+                        );
+                        Ok(StepFlow::Continue)
+                    }
+                    Err(err) => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        if stop_if_fail {
+                            Err(err)
+                        } else {
+                            Ok(StepFlow::Continue)
+                        }
+                    }
+                }
+            }
+            "sys:readFile" => {
+                let path = normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let file_type = self
+                    .input_string_opt(&step.input_params, "type")
+                    .unwrap_or_default();
+                match file_type.as_str() {
+                    "image" => match read_file_path_reference(&path) {
+                        Ok(value) => {
+                            self.assign_output(&step.output_params, "image", Value::String(value));
+                            self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                            Ok(StepFlow::Continue)
+                        }
+                        Err(err) => {
+                            self.assign_output(
+                                &step.output_params,
+                                "isSuccess",
+                                Value::Bool(false),
+                            );
+                            if stop_if_fail {
+                                Err(err)
+                            } else {
+                                Ok(StepFlow::Continue)
+                            }
+                        }
+                    },
+                    other => Err(format!("Unsupported readFile type: {other}")),
+                }
+            }
+            "sys:imageinfo" => {
+                let path = normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);
+                let bytes = read_binary_file(&path)?;
+                let (width, height) = image_dimensions(&bytes)?;
+                self.assign_output(
+                    &step.output_params,
+                    "width",
+                    Value::Number(serde_json::Number::from(width)),
+                );
+                self.assign_output(
+                    &step.output_params,
+                    "height",
+                    Value::Number(serde_json::Number::from(height)),
+                );
+                Ok(StepFlow::Continue)
+            }
+            "sys:imgToBase64" => {
+                let path = normalize_runtime_path(&self.input_string(&step.input_params, "img")?);
+                let bytes = read_binary_file(&path)?;
+                self.assign_output(
+                    &step.output_params,
+                    "code",
+                    Value::String(base64_encode(&bytes)),
+                );
+                Ok(StepFlow::Continue)
+            }
+            "sys:fileOperation" => {
+                let op = self
+                    .input_string_opt(&step.input_params, "type")
+                    .unwrap_or_default();
+                match op.as_str() {
+                    "deleteFile" => {
+                        let path =
+                            normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
+                        let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                        match delete_file_path(&path) {
+                            Ok(()) => {
+                                self.assign_output(
+                                    &step.output_params,
+                                    "isSuccess",
+                                    Value::Bool(true),
+                                );
+                                Ok(StepFlow::Continue)
+                            }
+                            Err(err) => {
+                                self.assign_output(
+                                    &step.output_params,
+                                    "isSuccess",
+                                    Value::Bool(false),
+                                );
+                                if stop_if_fail {
+                                    Err(err)
+                                } else {
+                                    Ok(StepFlow::Continue)
+                                }
+                            }
+                        }
+                    }
+                    other => Err(format!("Unsupported fileOperation type: {other}")),
+                }
             }
             "sys:splitString" => {
                 let input = self.input_string(&step.input_params, "data")?;
@@ -2449,7 +2621,38 @@ fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
     }
 
     output.push_str(rest);
-    output
+
+    let mut final_output = String::new();
+    let mut chars = output.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            let mut name = String::new();
+            let mut probe = chars.clone();
+            let mut found_end = false;
+            while let Some(next) = probe.next() {
+                if next == '}' {
+                    found_end = true;
+                    break;
+                }
+                name.push(next);
+            }
+            if found_end
+                && !name.is_empty()
+                && !name.chars().all(|ch| ch.is_ascii_digit())
+                && vars.contains_key(&name)
+            {
+                for _ in 0..name.len() {
+                    chars.next();
+                }
+                chars.next();
+                final_output.push_str(&value_to_string(vars.get(&name).unwrap()));
+                continue;
+            }
+        }
+        final_output.push(ch);
+    }
+
+    final_output
 }
 
 fn output_var_name(params: &Map<String, Value>, key: &str) -> Option<String> {
@@ -2808,6 +3011,435 @@ fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Resu
     std::fs::write(&path, content).map_err(|err| format!("Failed to save action state store: {err}"))
 }
 
+fn show_message_box(title: &str, message: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_show_message_box(title, message) {
+        return result;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(format!(
+                "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(@'\n{}\n'@, @'\n{}\n'@) | Out-Null",
+                message, title
+            ))
+            .status()
+            .map_err(|err| format!("Failed to show message box: {err}"))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("Message box command exited with {status}"))
+                }
+            });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "display dialog {:?} with title {:?} buttons {{\"OK\"}} default button \"OK\"",
+                message, title
+            ))
+            .status()
+            .map_err(|err| format!("Failed to show message box: {err}"))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("Message box command exited with {status}"))
+                }
+            });
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if which::which("kdialog").is_ok() {
+            return Command::new("kdialog")
+                .arg("--title")
+                .arg(title)
+                .arg("--msgbox")
+                .arg(message)
+                .status()
+                .map_err(|err| format!("Failed to show message box: {err}"))
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("Message box command exited with {status}"))
+                    }
+                });
+        }
+        if which::which("zenity").is_ok() {
+            return Command::new("zenity")
+                .arg("--info")
+                .arg("--title")
+                .arg(title)
+                .arg("--text")
+                .arg(message)
+                .status()
+                .map_err(|err| format!("Failed to show message box: {err}"))
+                .and_then(|status| {
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("Message box command exited with {status}"))
+                    }
+                });
+        }
+    }
+
+    Err("No supported message box backend was found".into())
+}
+
+fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = test_select_folder_dialog(prompt, init_dir) {
+        return result;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dlg.ShowDialog() -eq 'OK') { Write-Output $dlg.SelectedPath }";
+        let output = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(script)
+            .output()
+            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if text.is_empty() {
+                Err("Folder selection was cancelled".into())
+            } else {
+                Ok(text)
+            }
+        } else {
+            Err(format!("Folder dialog exited with {}", output.status))
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "choose folder with prompt {:?}",
+                if prompt.is_empty() { "Select folder" } else { prompt }
+            ))
+            .output()
+            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if text.is_empty() {
+                Err("Folder selection was cancelled".into())
+            } else {
+                Ok(text)
+            }
+        } else {
+            Err(format!("Folder dialog exited with {}", output.status))
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if which::which("kdialog").is_ok() {
+            let mut command = Command::new("kdialog");
+            command.arg("--getexistingdirectory");
+            if let Some(init) = init_dir.filter(|value| !value.trim().is_empty()) {
+                command.arg(init);
+            }
+            command.arg("--title").arg(if prompt.is_empty() {
+                "Select folder"
+            } else {
+                prompt
+            });
+            let output = command
+                .output()
+                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if text.is_empty() {
+                    Err("Folder selection was cancelled".into())
+                } else {
+                    Ok(text)
+                }
+            } else {
+                Err(format!("Folder dialog exited with {}", output.status))
+            }
+        } else if which::which("zenity").is_ok() {
+            let output = Command::new("zenity")
+                .arg("--file-selection")
+                .arg("--directory")
+                .arg("--title")
+                .arg(if prompt.is_empty() {
+                    "Select folder"
+                } else {
+                    prompt
+                })
+                .output()
+                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if text.is_empty() {
+                    Err("Folder selection was cancelled".into())
+                } else {
+                    Ok(text)
+                }
+            } else {
+                Err(format!("Folder dialog exited with {}", output.status))
+            }
+        } else {
+            Err("No supported folder dialog backend was found".into())
+        }
+    }
+}
+
+fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = test_prompt_user_input_dialog(prompt, default_value, multiline) {
+        return result;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "Add-Type -AssemblyName Microsoft.VisualBasic; $v=[Microsoft.VisualBasic.Interaction]::InputBox(@'\n{}\n'@, 'Input', @'\n{}\n'@); Write-Output $v",
+            prompt, default_value
+        );
+        let output = Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg(script)
+            .output()
+            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        } else {
+            Err(format!("Input dialog exited with {}", output.status))
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(format!(
+                "text returned of (display dialog {:?} default answer {:?} with title \"Input\")",
+                prompt, default_value
+            ))
+            .output()
+            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        } else {
+            Err(format!("Input dialog exited with {}", output.status))
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if which::which("kdialog").is_ok() {
+            let mut command = Command::new("kdialog");
+            if multiline {
+                command.arg("--textinputbox");
+            } else {
+                command.arg("--inputbox");
+            }
+            let output = command
+                .arg(if prompt.is_empty() { "Input" } else { prompt })
+                .arg(default_value)
+                .output()
+                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+            } else {
+                Err(format!("Input dialog exited with {}", output.status))
+            }
+        } else if which::which("zenity").is_ok() {
+            let output = Command::new("zenity")
+                .arg("--entry")
+                .arg("--title")
+                .arg("Input")
+                .arg("--text")
+                .arg(if prompt.is_empty() { "Input" } else { prompt })
+                .arg("--entry-text")
+                .arg(default_value)
+                .output()
+                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+            } else {
+                Err(format!("Input dialog exited with {}", output.status))
+            }
+        } else {
+            Err("No supported input dialog backend was found".into())
+        }
+    }
+}
+
+fn normalize_runtime_path(path: &str) -> String {
+    let expanded = path.trim().replace('\\', std::path::MAIN_SEPARATOR_STR);
+    expanded
+}
+
+fn download_to_file(url: &str, save_dir: &str, save_name: &str) -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = test_download_to_file(url, save_dir, save_name) {
+        return result;
+    }
+
+    let save_dir = normalize_runtime_path(save_dir);
+    fs::create_dir_all(&save_dir)
+        .map_err(|err| format!("Failed to create download directory '{}': {err}", save_dir))?;
+    let target = Path::new(&save_dir).join(save_name);
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(format!(
+            "Invoke-WebRequest -Uri {:?} -OutFile {:?}",
+            url,
+            target.to_string_lossy().to_string()
+        ))
+        .status()
+        .map_err(|err| format!("Failed to download file: {err}"))?;
+
+    #[cfg(not(target_os = "windows"))]
+    let status = if which::which("curl").is_ok() {
+        Command::new("curl")
+            .arg("-L")
+            .arg("-fsS")
+            .arg(url)
+            .arg("-o")
+            .arg(&target)
+            .status()
+            .map_err(|err| format!("Failed to download file: {err}"))?
+    } else if which::which("wget").is_ok() {
+        Command::new("wget")
+            .arg("-O")
+            .arg(&target)
+            .arg(url)
+            .status()
+            .map_err(|err| format!("Failed to download file: {err}"))?
+    } else {
+        return Err("No supported download backend was found".into());
+    };
+
+    if status.success() {
+        Ok(target.to_string_lossy().to_string())
+    } else {
+        Err(format!("Download command exited with {status}"))
+    }
+}
+
+fn read_file_path_reference(path: &str) -> Result<String, String> {
+    let normalized = normalize_runtime_path(path);
+    if Path::new(&normalized).exists() {
+        Ok(normalized)
+    } else {
+        Err(format!("File does not exist: {normalized}"))
+    }
+}
+
+fn read_binary_file(path: &str) -> Result<Vec<u8>, String> {
+    let normalized = normalize_runtime_path(path);
+    let mut file =
+        fs::File::open(&normalized).map_err(|err| format!("Failed to open file '{}': {err}", normalized))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|err| format!("Failed to read file '{}': {err}", normalized))?;
+    Ok(bytes)
+}
+
+fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    if bytes.len() >= 24 && bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return Ok((width, height));
+    }
+    if bytes.len() >= 10 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) {
+        let width = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+        let height = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+        return Ok((width, height));
+    }
+    if bytes.len() >= 26 && bytes.starts_with(b"BM") {
+        let width = u32::from_le_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
+        let height = u32::from_le_bytes([bytes[22], bytes[23], bytes[24], bytes[25]]);
+        return Ok((width, height));
+    }
+    if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+        let mut idx = 2usize;
+        while idx + 8 < bytes.len() {
+            if bytes[idx] != 0xFF {
+                idx += 1;
+                continue;
+            }
+            let marker = bytes[idx + 1];
+            idx += 2;
+            if marker == 0xD8 || marker == 0xD9 {
+                continue;
+            }
+            if idx + 2 > bytes.len() {
+                break;
+            }
+            let segment_len = u16::from_be_bytes([bytes[idx], bytes[idx + 1]]) as usize;
+            if segment_len < 2 || idx + segment_len > bytes.len() {
+                break;
+            }
+            if matches!(
+                marker,
+                0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD
+                    | 0xCE | 0xCF
+            ) {
+                let height = u16::from_be_bytes([bytes[idx + 3], bytes[idx + 4]]) as u32;
+                let width = u16::from_be_bytes([bytes[idx + 5], bytes[idx + 6]]) as u32;
+                return Ok((width, height));
+            }
+            idx += segment_len;
+        }
+    }
+    Err("Unsupported image format for imageinfo".into())
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
+        output.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
+        output.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(n & 0x3F) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
+fn delete_file_path(path: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_delete_file_path(path) {
+        return result;
+    }
+
+    let normalized = normalize_runtime_path(path);
+    if !Path::new(&normalized).exists() {
+        return Ok(());
+    }
+    fs::remove_file(&normalized)
+        .map_err(|err| format!("Failed to delete file '{}': {err}", normalized))
+}
+
 fn normalize_clipboard_text(text: Option<String>) -> Option<String> {
     let trimmed = text?.trim().to_string();
     if trimmed.is_empty() {
@@ -3026,6 +3658,14 @@ struct ActionTestRuntime {
     typed_input_results: VecDeque<Result<(), String>>,
     delays: Vec<u64>,
     action_state_store: ActionStateStore,
+    message_boxes: Vec<(String, String)>,
+    message_box_results: VecDeque<Result<(), String>>,
+    folder_dialog_results: VecDeque<Result<String, String>>,
+    input_dialog_results: VecDeque<Result<String, String>>,
+    download_calls: Vec<(String, String, String)>,
+    download_results: VecDeque<Result<String, String>>,
+    deleted_paths: Vec<String>,
+    delete_results: VecDeque<Result<(), String>>,
 }
 
 #[cfg(test)]
@@ -3151,6 +3791,70 @@ fn test_save_action_state_scope(scope: &str, state: &HashMap<String, String>) ->
             .insert(scope.to_string(), state.clone());
     });
     true
+}
+
+#[cfg(test)]
+fn test_show_message_box(title: &str, message: &str) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime
+            .message_boxes
+            .push((title.to_string(), message.to_string()));
+        runtime.message_box_results.pop_front()
+    })
+}
+
+#[cfg(test)]
+fn test_select_folder_dialog(_prompt: &str, _init_dir: Option<&str>) -> Option<Result<String, String>> {
+    with_action_test_runtime(|runtime| runtime.folder_dialog_results.pop_front())
+}
+
+#[cfg(test)]
+fn test_prompt_user_input_dialog(
+    _prompt: &str,
+    _default_value: &str,
+    _multiline: bool,
+) -> Option<Result<String, String>> {
+    with_action_test_runtime(|runtime| runtime.input_dialog_results.pop_front())
+}
+
+#[cfg(test)]
+fn test_download_to_file(url: &str, save_dir: &str, save_name: &str) -> Option<Result<String, String>> {
+    with_action_test_runtime(|runtime| {
+        runtime.download_calls.push((
+            url.to_string(),
+            save_dir.to_string(),
+            save_name.to_string(),
+        ));
+    });
+
+    let result = with_action_test_runtime(|runtime| runtime.download_results.pop_front());
+    match result {
+        Some(Ok(path)) => {
+            let normalized = normalize_runtime_path(&path);
+            if let Some(parent) = Path::new(&normalized).parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let png_1x1 = [
+                0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I',
+                b'H', b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
+                0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, b'I', b'D',
+                b'A', b'T', 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01,
+                0x00, 0x18, 0xDD, 0x8D, 0x18, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D',
+                0xAE, 0x42, 0x60, 0x82,
+            ];
+            let _ = fs::write(&normalized, png_1x1);
+            Some(Ok(path))
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
+fn test_delete_file_path(path: &str) -> Option<Result<(), String>> {
+    with_action_test_runtime(|runtime| {
+        runtime.deleted_paths.push(path.to_string());
+        runtime.delete_results.pop_front()
+    })
 }
 
 #[cfg(test)]
@@ -3361,6 +4065,45 @@ mod tests {
                     .map(String::as_str),
                 Some("/tmp/updated")
             );
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_executes_formula_to_image_sample() {
+        reset_action_test_runtime();
+        with_action_test_runtime(|runtime| {
+            runtime.message_box_results.push_back(Ok(()));
+            runtime
+                .folder_dialog_results
+                .push_back(Ok("/tmp/quicker-formula".into()));
+            runtime.input_dialog_results.push_back(Ok("x^2".into()));
+            runtime
+                .download_results
+                .push_back(Ok("/tmp/quicker-formula/latex_tmp.jpg".into()));
+            runtime.clipboard_html_write_results.push_back(Ok(()));
+            runtime.key_results.push_back(Ok(()));
+        });
+
+        let action = Action::from_quicker_plugin_json(
+            &sample("sample/公式转图片_20260319_105519.json"),
+        )
+        .expect("sample should parse");
+
+        let result = action.execute();
+
+        assert_eq!(result, ExecResult::Ok);
+        with_action_test_runtime(|runtime| {
+            assert_eq!(runtime.message_boxes.len(), 1);
+            assert_eq!(
+                runtime
+                    .action_state_store
+                    .get("f61295ca-e37e-410b-a401-da0510fc1e88")
+                    .and_then(|scope| scope.get("path"))
+                    .map(String::as_str),
+                Some("/tmp/quicker-formula")
+            );
+            assert_eq!(runtime.clipboard_html_writes.len(), 1);
+            assert_eq!(runtime.key_calls, vec![(vec!["ctrl".into()], "v".into())]);
         });
     }
 
