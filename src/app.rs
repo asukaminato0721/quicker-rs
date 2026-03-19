@@ -9,6 +9,7 @@ use crate::search::SearchEngine;
 use eframe::egui;
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use std::collections::BTreeSet;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -89,6 +90,11 @@ struct StepDragPayload {
     from: usize,
 }
 
+enum PluginEditorMode {
+    LowCode,
+    RawJson { reason: String },
+}
+
 #[derive(Clone)]
 struct ActionEditTarget {
     profile_idx: usize,
@@ -124,6 +130,7 @@ pub struct QuickerApp {
     edit_field2: String, // args / shell / fallback url
     edit_field3: String, // working_dir
     plugin_draft: LowCodePluginDraft,
+    plugin_editor_mode: PluginEditorMode,
     plugin_new_key_macro_step_idx: usize,
     plugin_new_step_idx: usize,
     edit_target: Option<ActionEditTarget>,
@@ -174,6 +181,7 @@ impl QuickerApp {
             edit_field2: String::new(),
             edit_field3: String::new(),
             plugin_draft: LowCodePluginDraft::default(),
+            plugin_editor_mode: PluginEditorMode::LowCode,
             plugin_new_key_macro_step_idx: 0,
             plugin_new_step_idx: 0,
             edit_target: None,
@@ -273,6 +281,7 @@ impl QuickerApp {
         self.edit_field2.clear();
         self.edit_field3.clear();
         self.plugin_draft = LowCodePluginDraft::default();
+        self.plugin_editor_mode = PluginEditorMode::LowCode;
         self.plugin_new_key_macro_step_idx = 0;
         self.plugin_new_step_idx = 0;
         self.edit_target = None;
@@ -423,18 +432,25 @@ impl QuickerApp {
             return;
         };
 
-        let draft = match LowCodePluginDraft::from_quicker_plugin_json(&plugin.quicker_json) {
-            Ok(draft) => draft,
-            Err(err) => {
-                self.show_toast(err, true);
-                return;
-            }
-        };
-
         self.reset_editor();
         self.edit_kind_idx = 10;
-        self.plugin_draft = draft;
         self.edit_field1 = plugin.quicker_json.clone();
+        match LowCodePluginDraft::from_quicker_plugin_json(&plugin.quicker_json) {
+            Ok(draft) => {
+                self.plugin_draft = draft;
+                self.plugin_editor_mode = PluginEditorMode::LowCode;
+            }
+            Err(err) => {
+                self.plugin_editor_mode = PluginEditorMode::RawJson {
+                    reason: err.clone(),
+                };
+                self.show_toast(
+                    "This plugin uses unsupported builder features. Opened in raw JSON mode."
+                        .into(),
+                    false,
+                );
+            }
+        }
         self.edit_target = Some(ActionEditTarget {
             profile_idx: entry.profile_idx,
             path: entry.path.clone(),
@@ -1036,186 +1052,79 @@ impl QuickerApp {
         remove
     }
 
-    fn render_plugin_json_editor(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Quicker Type:");
-            egui::ComboBox::from_id_salt("quicker_doc_kind")
-                .selected_text(match self.plugin_draft.kind {
-                    LowCodePluginKind::KeyMacro => "ActionType 7: Key Macro",
-                    LowCodePluginKind::OpenApp => "ActionType 11: Open App/File",
-                    LowCodePluginKind::PluginFlow => "ActionType 24: Plugin Flow",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.plugin_draft.kind,
-                        LowCodePluginKind::KeyMacro,
-                        "ActionType 7: Key Macro",
-                    );
-                    ui.selectable_value(
-                        &mut self.plugin_draft.kind,
-                        LowCodePluginKind::OpenApp,
-                        "ActionType 11: Open App/File",
-                    );
-                    ui.selectable_value(
-                        &mut self.plugin_draft.kind,
-                        LowCodePluginKind::PluginFlow,
-                        "ActionType 24: Plugin Flow",
-                    );
-                });
-        });
-        ui.add_space(6.0);
-
+    fn render_plugin_metadata_fields(ui: &mut egui::Ui, draft: &mut LowCodePluginDraft) {
         ui.label("Title:");
-        ui.text_edit_singleline(&mut self.plugin_draft.title);
+        ui.text_edit_singleline(&mut draft.title);
         ui.label("Description:");
-        ui.text_edit_singleline(&mut self.plugin_draft.description);
+        ui.text_edit_singleline(&mut draft.description);
         ui.label("Icon:");
-        let mut icon_text = self.plugin_draft.icon.clone().unwrap_or_default();
+        let mut icon_text = draft.icon.clone().unwrap_or_default();
         if ui.text_edit_singleline(&mut icon_text).changed() {
-            self.plugin_draft.icon = if icon_text.trim().is_empty() {
+            draft.icon = if icon_text.trim().is_empty() {
                 None
             } else {
                 Some(icon_text)
             };
         }
+    }
 
+    fn plugin_flow_variable_names(steps: &[LowCodePluginStep]) -> Vec<String> {
+        let mut names = BTreeSet::new();
+        for step in steps {
+            match step {
+                LowCodePluginStep::GetClipboard { output, .. }
+                | LowCodePluginStep::RegexExtract { output, .. }
+                | LowCodePluginStep::StringProcess { output, .. }
+                | LowCodePluginStep::SplitString { output, .. }
+                | LowCodePluginStep::Assign { output, .. }
+                | LowCodePluginStep::StrReplace { output, .. }
+                | LowCodePluginStep::FormatString { output, .. } => {
+                    let trimmed = output.trim();
+                    if !trimmed.is_empty() {
+                        names.insert(trimmed.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        names.into_iter().collect()
+    }
+
+    fn render_plugin_flow_builder(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Plugin Flow").strong());
+        ui.label(
+            egui::RichText::new(
+                "Reference layout: left palette, center flow, right properties. Drag cards in the middle column to reorder them.",
+            )
+            .weak()
+            .small(),
+        );
         ui.add_space(8.0);
-        match self.plugin_draft.kind {
-            LowCodePluginKind::KeyMacro => {
-                ui.label(egui::RichText::new("Key Macro").strong());
+
+        ui.columns(3, |columns| {
+            columns[0].group(|ui| {
+                ui.label(egui::RichText::new("Step Palette").strong());
+                ui.label(egui::RichText::new("Click to add a step.").weak().small());
+                ui.add_space(6.0);
+                for (idx, label) in Self::plugin_step_kind_labels().iter().enumerate() {
+                    if ui
+                        .add_sized([ui.available_width(), 28.0], egui::Button::new(*label))
+                        .clicked()
+                    {
+                        self.plugin_draft.steps.push(Self::make_plugin_step(idx));
+                    }
+                }
+            });
+
+            columns[1].group(|ui| {
+                ui.label(egui::RichText::new("Main Steps").strong());
                 ui.label(
-                    egui::RichText::new(
-                        "Build the macro with structured steps. The visual editor currently supports the runtime subset: Send Keys, Type Text, and Delay.",
-                    )
-                    .weak()
-                    .small(),
+                    egui::RichText::new("This is the executable order of the flow.")
+                        .weak()
+                        .small(),
                 );
                 ui.add_space(6.0);
 
-                let labels = Self::key_macro_step_kind_labels();
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("key_macro_new_step_kind")
-                        .selected_text(labels[self.plugin_new_key_macro_step_idx])
-                        .show_ui(ui, |ui| {
-                            for (idx, label) in labels.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut self.plugin_new_key_macro_step_idx,
-                                    idx,
-                                    *label,
-                                );
-                            }
-                        });
-
-                    if ui.button("Add Step").clicked() {
-                        self.plugin_draft.key_macro_steps.push(Self::make_key_macro_step(
-                            self.plugin_new_key_macro_step_idx,
-                        ));
-                    }
-                });
-
-                ui.add_space(8.0);
-                let mut remove_idx = None;
-                let mut move_request = None;
-                let drop_frame = egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
-
-                if self.plugin_draft.key_macro_steps.is_empty() {
-                    ui.label(
-                        egui::RichText::new("No macro steps yet. Add one from the palette above.")
-                            .weak(),
-                    );
-                } else {
-                    for insert_idx in 0..=self.plugin_draft.key_macro_steps.len() {
-                        let (_, dropped) =
-                            ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(egui::RichText::new("Drop step here").weak().small());
-                                });
-                            });
-                        if let Some(payload) = dropped {
-                            move_request = Some((payload.from, insert_idx));
-                        }
-
-                        if insert_idx == self.plugin_draft.key_macro_steps.len() {
-                            break;
-                        }
-
-                        let response = ui.dnd_drag_source(
-                            egui::Id::new(("key_macro_step", insert_idx)),
-                            StepDragPayload { from: insert_idx },
-                            |ui| {
-                                Self::render_key_macro_step_card(
-                                    ui,
-                                    insert_idx,
-                                    &mut self.plugin_draft.key_macro_steps[insert_idx],
-                                )
-                            },
-                        );
-                        if response.inner {
-                            remove_idx = Some(insert_idx);
-                        }
-                        ui.add_space(4.0);
-                    }
-                }
-
-                if let Some((from, mut to)) = move_request {
-                    if from < self.plugin_draft.key_macro_steps.len() {
-                        if from < to {
-                            to -= 1;
-                        }
-                        if from != to && to <= self.plugin_draft.key_macro_steps.len() {
-                            let step = self.plugin_draft.key_macro_steps.remove(from);
-                            self.plugin_draft.key_macro_steps.insert(to, step);
-                        }
-                    }
-                }
-                if let Some(idx) = remove_idx {
-                    if idx < self.plugin_draft.key_macro_steps.len() {
-                        self.plugin_draft.key_macro_steps.remove(idx);
-                    }
-                }
-            }
-            LowCodePluginKind::OpenApp => {
-                ui.label(egui::RichText::new("Open App / File").strong());
-                ui.label("Target path:");
-                ui.text_edit_singleline(&mut self.plugin_draft.launch_path);
-                ui.label("Arguments:");
-                ui.text_edit_singleline(&mut self.plugin_draft.launch_arguments);
-                ui.checkbox(
-                    &mut self.plugin_draft.launch_set_working_dir,
-                    "Use target folder as working directory",
-                );
-            }
-            LowCodePluginKind::PluginFlow => {
-                ui.label(egui::RichText::new("Low-code steps").strong());
-                ui.label(
-                    egui::RichText::new(
-                        "Use $var to read a previous step output. Drag cards to reorder them. The builder currently targets the flat ActionType 24 step set supported by quicker-rs.",
-                    )
-                    .weak()
-                    .small(),
-                );
-                ui.add_space(6.0);
-
-                let labels = Self::plugin_step_kind_labels();
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("plugin_new_step_kind")
-                        .selected_text(labels[self.plugin_new_step_idx])
-                        .show_ui(ui, |ui| {
-                            for (idx, label) in labels.iter().enumerate() {
-                                ui.selectable_value(&mut self.plugin_new_step_idx, idx, *label);
-                            }
-                        });
-
-                    if ui.button("Add Step").clicked() {
-                        self.plugin_draft
-                            .steps
-                            .push(Self::make_plugin_step(self.plugin_new_step_idx));
-                    }
-                });
-
-                ui.add_space(8.0);
                 let mut remove_idx = None;
                 let mut move_request = None;
                 let drop_frame = egui::Frame::new()
@@ -1224,7 +1133,8 @@ impl QuickerApp {
 
                 if self.plugin_draft.steps.is_empty() {
                     ui.label(
-                        egui::RichText::new("No steps yet. Add one from the palette above.").weak(),
+                        egui::RichText::new("No steps yet. Add one from the left palette.")
+                            .weak(),
                     );
                 } else {
                     for insert_idx in 0..=self.plugin_draft.steps.len() {
@@ -1276,6 +1186,198 @@ impl QuickerApp {
                         self.plugin_draft.steps.remove(idx);
                     }
                 }
+            });
+
+            columns[2].group(|ui| {
+                ui.label(egui::RichText::new("Properties").strong());
+                ui.label(
+                    egui::RichText::new("Action metadata and derived variables.")
+                        .weak()
+                        .small(),
+                );
+                ui.add_space(6.0);
+                Self::render_plugin_metadata_fields(ui, &mut self.plugin_draft);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("Variables").strong());
+                let variable_names = Self::plugin_flow_variable_names(&self.plugin_draft.steps);
+                if variable_names.is_empty() {
+                    ui.label(egui::RichText::new("No output variables yet.").weak());
+                } else {
+                    for name in variable_names {
+                        ui.label(format!("${name}"));
+                    }
+                }
+            });
+        });
+    }
+
+    fn render_plugin_json_editor(&mut self, ui: &mut egui::Ui) {
+        match &self.plugin_editor_mode {
+            PluginEditorMode::LowCode => {
+                ui.horizontal(|ui| {
+                    ui.label("Quicker Type:");
+                    egui::ComboBox::from_id_salt("quicker_doc_kind")
+                        .selected_text(match self.plugin_draft.kind {
+                            LowCodePluginKind::KeyMacro => "ActionType 7: Key Macro",
+                            LowCodePluginKind::OpenApp => "ActionType 11: Open App/File",
+                            LowCodePluginKind::PluginFlow => "ActionType 24: Plugin Flow",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.plugin_draft.kind,
+                                LowCodePluginKind::KeyMacro,
+                                "ActionType 7: Key Macro",
+                            );
+                            ui.selectable_value(
+                                &mut self.plugin_draft.kind,
+                                LowCodePluginKind::OpenApp,
+                                "ActionType 11: Open App/File",
+                            );
+                            ui.selectable_value(
+                                &mut self.plugin_draft.kind,
+                                LowCodePluginKind::PluginFlow,
+                                "ActionType 24: Plugin Flow",
+                            );
+                        });
+                });
+                ui.add_space(6.0);
+
+                if !matches!(self.plugin_draft.kind, LowCodePluginKind::PluginFlow) {
+                    Self::render_plugin_metadata_fields(ui, &mut self.plugin_draft);
+                    ui.add_space(8.0);
+                }
+
+                match self.plugin_draft.kind {
+                    LowCodePluginKind::KeyMacro => {
+                        ui.label(egui::RichText::new("Key Macro").strong());
+                        ui.label(
+                            egui::RichText::new(
+                                "Build the macro with structured steps. The visual editor currently supports the runtime subset: Send Keys, Type Text, and Delay.",
+                            )
+                            .weak()
+                            .small(),
+                        );
+                        ui.add_space(6.0);
+
+                        let labels = Self::key_macro_step_kind_labels();
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("key_macro_new_step_kind")
+                                .selected_text(labels[self.plugin_new_key_macro_step_idx])
+                                .show_ui(ui, |ui| {
+                                    for (idx, label) in labels.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.plugin_new_key_macro_step_idx,
+                                            idx,
+                                            *label,
+                                        );
+                                    }
+                                });
+
+                            if ui.button("Add Step").clicked() {
+                                self.plugin_draft.key_macro_steps.push(Self::make_key_macro_step(
+                                    self.plugin_new_key_macro_step_idx,
+                                ));
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        let mut remove_idx = None;
+                        let mut move_request = None;
+                        let drop_frame = egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(8, 4))
+                            .stroke(egui::Stroke::new(
+                                1.0,
+                                ui.visuals().widgets.inactive.bg_stroke.color,
+                            ));
+
+                        if self.plugin_draft.key_macro_steps.is_empty() {
+                            ui.label(
+                                egui::RichText::new(
+                                    "No macro steps yet. Add one from the palette above.",
+                                )
+                                .weak(),
+                            );
+                        } else {
+                            for insert_idx in 0..=self.plugin_draft.key_macro_steps.len() {
+                                let (_, dropped) =
+                                    ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("Drop step here").weak().small(),
+                                            );
+                                        });
+                                    });
+                                if let Some(payload) = dropped {
+                                    move_request = Some((payload.from, insert_idx));
+                                }
+
+                                if insert_idx == self.plugin_draft.key_macro_steps.len() {
+                                    break;
+                                }
+
+                                let response = ui.dnd_drag_source(
+                                    egui::Id::new(("key_macro_step", insert_idx)),
+                                    StepDragPayload { from: insert_idx },
+                                    |ui| {
+                                        Self::render_key_macro_step_card(
+                                            ui,
+                                            insert_idx,
+                                            &mut self.plugin_draft.key_macro_steps[insert_idx],
+                                        )
+                                    },
+                                );
+                                if response.inner {
+                                    remove_idx = Some(insert_idx);
+                                }
+                                ui.add_space(4.0);
+                            }
+                        }
+
+                        if let Some((from, mut to)) = move_request {
+                            if from < self.plugin_draft.key_macro_steps.len() {
+                                if from < to {
+                                    to -= 1;
+                                }
+                                if from != to && to <= self.plugin_draft.key_macro_steps.len() {
+                                    let step = self.plugin_draft.key_macro_steps.remove(from);
+                                    self.plugin_draft.key_macro_steps.insert(to, step);
+                                }
+                            }
+                        }
+                        if let Some(idx) = remove_idx {
+                            if idx < self.plugin_draft.key_macro_steps.len() {
+                                self.plugin_draft.key_macro_steps.remove(idx);
+                            }
+                        }
+                    }
+                    LowCodePluginKind::OpenApp => {
+                        ui.label(egui::RichText::new("Open App / File").strong());
+                        ui.label("Target path:");
+                        ui.text_edit_singleline(&mut self.plugin_draft.launch_path);
+                        ui.label("Arguments:");
+                        ui.text_edit_singleline(&mut self.plugin_draft.launch_arguments);
+                        ui.checkbox(
+                            &mut self.plugin_draft.launch_set_working_dir,
+                            "Use target folder as working directory",
+                        );
+                    }
+                    LowCodePluginKind::PluginFlow => {
+                        self.render_plugin_flow_builder(ui);
+                    }
+                }
+            }
+            PluginEditorMode::RawJson { reason } => {
+                ui.label(egui::RichText::new("Raw JSON Mode").strong());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "This plugin cannot be imported into the low-code builder yet: {reason}"
+                    ))
+                    .weak()
+                    .small(),
+                );
+                ui.add_space(6.0);
             }
         }
 
@@ -1284,14 +1386,19 @@ impl QuickerApp {
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Raw JSON Import / Export").strong());
         ui.label(
-            egui::RichText::new(
-                "Import a supported ActionType 7, 11, or 24 document into the builder, or export the current draft as native Quicker JSON.",
-            )
+            egui::RichText::new(match self.plugin_editor_mode {
+                PluginEditorMode::LowCode =>
+                    "Import a supported ActionType 7, 11, or 24 document into the builder, or export the current draft as native Quicker JSON.",
+                PluginEditorMode::RawJson { .. } =>
+                    "This plugin is currently using raw JSON mode. You can edit the JSON directly here, then save it, or try importing it into the builder again after simplifying unsupported steps.",
+            })
             .weak()
             .small(),
         );
         ui.horizontal(|ui| {
-            if ui.button("Export Draft to JSON").clicked() {
+            if matches!(self.plugin_editor_mode, PluginEditorMode::LowCode)
+                && ui.button("Export Draft to JSON").clicked()
+            {
                 match self.plugin_draft.to_quicker_json() {
                     Ok(json) => {
                         self.edit_field1 = json;
@@ -1304,9 +1411,15 @@ impl QuickerApp {
                 match LowCodePluginDraft::from_quicker_plugin_json(&self.edit_field1) {
                     Ok(draft) => {
                         self.plugin_draft = draft;
+                        self.plugin_editor_mode = PluginEditorMode::LowCode;
                         self.show_toast("Imported JSON into the builder".into(), false);
                     }
-                    Err(err) => self.show_toast(err, true),
+                    Err(err) => {
+                        self.plugin_editor_mode = PluginEditorMode::RawJson {
+                            reason: err.clone(),
+                        };
+                        self.show_toast(err, true);
+                    }
                 }
             }
         });
@@ -1993,7 +2106,13 @@ impl QuickerApp {
                         },
                     },
                     10 => {
-                        let action = match self.plugin_draft.to_action() {
+                        let action_result = match self.plugin_editor_mode {
+                            PluginEditorMode::LowCode => self.plugin_draft.to_action(),
+                            PluginEditorMode::RawJson { .. } => {
+                                Action::from_quicker_plugin_json(&self.edit_field1)
+                            }
+                        };
+                        let action = match action_result {
                             Ok(action) => action,
                             Err(err) => {
                                 self.show_toast(err, true);
