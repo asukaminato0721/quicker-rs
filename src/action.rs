@@ -6,7 +6,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -121,8 +123,12 @@ pub enum LowCodeKeyMacroStep {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LowCodePluginStep {
-    OpenUrl { url: String },
-    Delay { delay_ms: u32 },
+    OpenUrl {
+        url: String,
+    },
+    Delay {
+        delay_ms: u32,
+    },
     SimpleIf {
         condition: String,
         if_steps: Vec<LowCodePluginStep>,
@@ -175,7 +181,10 @@ pub enum LowCodePluginStep {
         path: String,
         disabled: bool,
     },
-    KeyInput { modifiers: String, key: String },
+    KeyInput {
+        modifiers: String,
+        key: String,
+    },
     GetClipboard {
         format: LowCodeClipboardFormat,
         output: String,
@@ -220,7 +229,9 @@ pub enum LowCodePluginStep {
         p4: String,
         output: String,
     },
-    Notify { message: String },
+    Notify {
+        message: String,
+    },
     OutputText {
         content: String,
         append_return: bool,
@@ -281,6 +292,25 @@ pub enum ExecResult {
     Err(String),
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ActionExecutionControl {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ActionExecutionControl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
 impl Action {
     pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
         let quicker_json = match &self.kind {
@@ -333,6 +363,14 @@ impl Action {
 
     /// Execute this action.
     pub fn execute(&self) -> ExecResult {
+        self.execute_with_control(None)
+    }
+
+    pub fn execute_with_control(&self, control: Option<&ActionExecutionControl>) -> ExecResult {
+        if let Err(err) = ensure_not_cancelled(control) {
+            return ExecResult::Err(err);
+        }
+
         match &self.kind {
             ActionKind::RunProgram {
                 command,
@@ -352,7 +390,7 @@ impl Action {
                 Err(e) => ExecResult::Err(format!("Failed to open URL '{}': {}", url, e)),
             },
 
-            ActionKind::RunShell { script, shell } => run_shell_command(script, shell),
+            ActionKind::RunShell { script, shell } => run_shell_command(script, shell, control),
 
             ActionKind::CopyText { text } => match write_clipboard_text(text) {
                 Ok(_) => ExecResult::OkWithMessage("Copied to clipboard".into()),
@@ -420,10 +458,12 @@ impl Action {
                     Ok(text) => text,
                     Err(err) => return ExecResult::Err(err),
                 };
-                run_shell_command(&clipboard_text, shell)
+                run_shell_command(&clipboard_text, shell, control)
             }
 
-            ActionKind::PluginPipeline { plugin } => execute_quicker_action_document(&plugin.quicker_json),
+            ActionKind::PluginPipeline { plugin } => {
+                execute_quicker_action_document(&plugin.quicker_json, control)
+            }
 
             ActionKind::Group { .. } => ExecResult::Ok,
         }
@@ -765,12 +805,14 @@ impl LowCodePluginStep {
                         .map(|step| step.to_step_document(variable_names))
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
-                else_steps: (!else_steps.is_empty()).then(|| {
-                    else_steps
-                        .iter()
-                        .map(|step| step.to_step_document(variable_names))
-                        .collect::<Result<Vec<_>, _>>()
-                }).transpose()?,
+                else_steps: (!else_steps.is_empty())
+                    .then(|| {
+                        else_steps
+                            .iter()
+                            .map(|step| step.to_step_document(variable_names))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?,
                 note: None,
                 disabled: false,
                 collapsed: false,
@@ -857,7 +899,11 @@ impl LowCodePluginStep {
                         ("closeOnDeactivated", "0"),
                         ("stopIfFail", "1"),
                     ]),
-                    map_with_output([("isSuccess", ""), ("textValue", output.as_str()), ("isEmpty", "")]),
+                    map_with_output([
+                        ("isSuccess", ""),
+                        ("textValue", output.as_str()),
+                        ("isEmpty", ""),
+                    ]),
                 ))
             }
             Self::DownloadFile {
@@ -995,10 +1041,8 @@ impl LowCodePluginStep {
                 output,
             } => {
                 track_variable_name(variable_names, output);
-                let mut input_params = map_with_binding([
-                    ("data", input.as_str()),
-                    ("pattern", pattern.as_str()),
-                ]);
+                let mut input_params =
+                    map_with_binding([("data", input.as_str()), ("pattern", pattern.as_str())]);
                 input_params.insert("getGroup".into(), low_code_literal("0"));
                 input_params.insert("stopIfFail".into(), low_code_literal("1"));
                 Ok(step_document(
@@ -1034,10 +1078,8 @@ impl LowCodePluginStep {
                 output,
             } => {
                 track_variable_name(variable_names, output);
-                let mut input_params = map_with_binding([
-                    ("data", input.as_str()),
-                    ("separator", separator.as_str()),
-                ]);
+                let mut input_params =
+                    map_with_binding([("data", input.as_str()), ("separator", separator.as_str())]);
                 input_params.insert("escapeSeparator".into(), low_code_literal("1"));
                 input_params.insert("removeEmpty".into(), low_code_literal("1"));
                 Ok(step_document(
@@ -1227,7 +1269,10 @@ impl QuickerActionDocument {
     }
 
     fn data_payload(&self) -> Result<QuickerPluginData, String> {
-        parse_json_lenient(self.data_text(), "Failed to parse Quicker plugin data payload")
+        parse_json_lenient(
+            self.data_text(),
+            "Failed to parse Quicker plugin data payload",
+        )
     }
 
     fn launch_payload(&self) -> Result<QuickerLaunchData, String> {
@@ -1442,10 +1487,16 @@ fn binding_bool(params: &Map<String, Value>, key: &str) -> bool {
     let Ok(binding) = serde_json::from_value::<QuickerValueBinding>(raw.clone()) else {
         return false;
     };
-    binding.value.as_ref().map(|value| truthy(Some(value))).unwrap_or(false)
+    binding
+        .value
+        .as_ref()
+        .map(|value| truthy(Some(value)))
+        .unwrap_or(false)
 }
 
-fn low_code_step_from_document(step: &QuickerPluginStepDocument) -> Result<LowCodePluginStep, String> {
+fn low_code_step_from_document(
+    step: &QuickerPluginStepDocument,
+) -> Result<LowCodePluginStep, String> {
     match step.step_runner_key.as_str() {
         "sys:openUrl" => Ok(LowCodePluginStep::OpenUrl {
             url: binding_string(&step.input_params, "url").unwrap_or_default(),
@@ -1651,14 +1702,12 @@ fn parse_low_code_modifiers(value: &str) -> Result<Vec<u32>, String> {
         .split(['+', ',', ' '])
         .map(str::trim)
         .filter(|token| !token.is_empty())
-        .map(|token| {
-            match token.to_ascii_lowercase().as_str() {
-                "shift" => Ok(160),
-                "ctrl" | "control" => Ok(162),
-                "alt" => Ok(164),
-                "super" | "win" | "meta" => Ok(91),
-                _ => Err(format!("Unsupported low-code modifier: {token}")),
-            }
+        .map(|token| match token.to_ascii_lowercase().as_str() {
+            "shift" => Ok(160),
+            "ctrl" | "control" => Ok(162),
+            "alt" => Ok(164),
+            "super" | "win" | "meta" => Ok(91),
+            _ => Err(format!("Unsupported low-code modifier: {token}")),
         })
         .collect()
 }
@@ -1769,7 +1818,11 @@ fn parse_quicker_key_macro_script(script: &str) -> Result<Vec<LowCodeKeyMacroSte
             let mut modifiers = Vec::new();
             let mut key = None;
 
-            for token in keys.split('+').map(str::trim).filter(|token| !token.is_empty()) {
+            for token in keys
+                .split('+')
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+            {
                 if let Some(modifier) = quicker_macro_modifier_label(token) {
                     modifiers.push(modifier.to_string());
                     continue;
@@ -1845,10 +1898,15 @@ struct QuickerRuntime {
     last_message: Option<String>,
     state_scope: String,
     action_state: HashMap<String, String>,
+    control: Option<ActionExecutionControl>,
 }
 
 impl QuickerRuntime {
-    fn new(data: &QuickerPluginData, state_scope: String) -> Self {
+    fn new(
+        data: &QuickerPluginData,
+        state_scope: String,
+        control: Option<ActionExecutionControl>,
+    ) -> Self {
         let mut vars = HashMap::new();
         for variable in &data.variables {
             vars.insert(
@@ -1863,17 +1921,19 @@ impl QuickerRuntime {
             last_message: None,
             state_scope,
             action_state,
+            control,
         }
     }
 
     fn run_steps(&mut self, steps: &[QuickerPluginStepDocument]) -> Result<StepFlow, String> {
         for step in steps {
+            ensure_not_cancelled(self.control.as_ref())?;
             if step.disabled {
                 continue;
             }
 
             if step.delay_ms > 0 {
-                sleep_millis(step.delay_ms as u64);
+                sleep_millis(step.delay_ms as u64, self.control.as_ref())?;
             }
 
             match self.run_step(step)? {
@@ -1927,14 +1987,18 @@ impl QuickerRuntime {
                 }
             }
             "sys:MsgBox" => {
-                let title = self.input_string_opt(&step.input_params, "title").unwrap_or_default();
+                let title = self
+                    .input_string_opt(&step.input_params, "title")
+                    .unwrap_or_default();
                 let message = self.input_string(&step.input_params, "message")?;
                 show_message_box(&title, &message)?;
                 self.assign_output(&step.output_params, "okOrYes", Value::Bool(true));
                 Ok(StepFlow::Continue)
             }
             "sys:selectFolder" => {
-                let prompt = self.input_string_opt(&step.input_params, "prompt").unwrap_or_default();
+                let prompt = self
+                    .input_string_opt(&step.input_params, "prompt")
+                    .unwrap_or_default();
                 let init_dir = self.input_string_opt(&step.input_params, "initDir");
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
                 match select_folder_dialog(&prompt, init_dir.as_deref()) {
@@ -1954,7 +2018,9 @@ impl QuickerRuntime {
                 }
             }
             "sys:userInput" => {
-                let prompt = self.input_string_opt(&step.input_params, "prompt").unwrap_or_default();
+                let prompt = self
+                    .input_string_opt(&step.input_params, "prompt")
+                    .unwrap_or_default();
                 let default_value = self
                     .input_string_opt(&step.input_params, "defaultValue")
                     .unwrap_or_default();
@@ -1986,7 +2052,7 @@ impl QuickerRuntime {
                     .input_string_opt(&step.input_params, "delayMs")
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
-                sleep_millis(delay_ms);
+                sleep_millis(delay_ms, self.control.as_ref())?;
                 Ok(StepFlow::Continue)
             }
             "sys:keyInput" => {
@@ -2134,7 +2200,13 @@ impl QuickerRuntime {
                         .filter(|value| !value.trim().is_empty()),
                 );
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match download_to_file(&url, &save_path, &save_name, &options) {
+                match download_to_file(
+                    &url,
+                    &save_path,
+                    &save_name,
+                    &options,
+                    self.control.as_ref(),
+                ) {
                     Ok(saved_path) => {
                         self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
                         self.assign_output(
@@ -2184,7 +2256,8 @@ impl QuickerRuntime {
                 }
             }
             "sys:imageinfo" => {
-                let path = normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);
+                let path =
+                    normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);
                 let bytes = read_binary_file(&path)?;
                 let (width, height) = image_dimensions(&bytes)?;
                 self.assign_output(
@@ -2373,12 +2446,12 @@ impl QuickerRuntime {
                 match method.as_str() {
                     "paste" => {
                         write_clipboard_text(&content)?;
-                        sleep_millis(before);
+                        sleep_millis(before, self.control.as_ref())?;
                         send_key_combo(&["ctrl".into()], "v")?;
                         if append_return {
                             send_key_combo(&[], "Return")?;
                         }
-                        sleep_millis(after);
+                        sleep_millis(after, self.control.as_ref())?;
                     }
                     other => return Err(format!("Unsupported outputText method: {other}")),
                 }
@@ -2408,7 +2481,8 @@ impl QuickerRuntime {
     }
 
     fn input_string_opt(&self, params: &Map<String, Value>, key: &str) -> Option<String> {
-        self.input_value(params, key).map(|value| value_to_string(&value))
+        self.input_value(params, key)
+            .map(|value| value_to_string(&value))
     }
 
     fn input_bool(&self, params: &Map<String, Value>, key: &str) -> bool {
@@ -2435,12 +2509,7 @@ impl QuickerRuntime {
             .and_then(|regex| regex.captures(trimmed).ok().flatten())
         {
             let name = captures.get(1)?.as_str();
-            let index = captures
-                .get(2)
-                ?
-                .as_str()
-                .parse::<usize>()
-                .ok()?;
+            let index = captures.get(2)?.as_str().parse::<usize>().ok()?;
             let values = self.vars.get(name)?.as_array()?;
             return values.get(index).cloned();
         }
@@ -2457,7 +2526,10 @@ impl QuickerRuntime {
     }
 }
 
-fn execute_quicker_action_document(quicker_json: &str) -> ExecResult {
+fn execute_quicker_action_document(
+    quicker_json: &str,
+    control: Option<&ActionExecutionControl>,
+) -> ExecResult {
     let document = match parse_quicker_action_document(quicker_json) {
         Ok(document) => document,
         Err(err) => {
@@ -2466,20 +2538,25 @@ fn execute_quicker_action_document(quicker_json: &str) -> ExecResult {
     };
 
     if let Some(delay_ms) = document.delay_ms.filter(|delay| *delay > 0) {
-        sleep_millis(delay_ms as u64);
+        if let Err(err) = sleep_millis(delay_ms as u64, control) {
+            return ExecResult::Err(err);
+        }
     }
 
     match document.action_type {
-        QUICKER_PLUGIN_ACTION_TYPE => execute_quicker_plugin_steps(&document),
+        QUICKER_PLUGIN_ACTION_TYPE => execute_quicker_plugin_steps(&document, control),
         QUICKER_OPEN_ACTION_TYPE => execute_quicker_launch(&document),
-        QUICKER_KEYS_ACTION_TYPE => execute_quicker_key_macro(&document),
+        QUICKER_KEYS_ACTION_TYPE => execute_quicker_key_macro(&document, control),
         action_type => ExecResult::Err(format!(
             "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
         )),
     }
 }
 
-fn execute_quicker_plugin_steps(document: &QuickerActionDocument) -> ExecResult {
+fn execute_quicker_plugin_steps(
+    document: &QuickerActionDocument,
+    control: Option<&ActionExecutionControl>,
+) -> ExecResult {
     if document.use_template.unwrap_or(false) && !document.has_data() {
         return ExecResult::Err(
             "Template-based Quicker actions cannot run yet because the template body is not embedded in the sample JSON"
@@ -2496,7 +2573,7 @@ fn execute_quicker_plugin_steps(document: &QuickerActionDocument) -> ExecResult 
         .id
         .clone()
         .unwrap_or_else(|| document.title.clone());
-    let mut runtime = QuickerRuntime::new(&data, state_scope);
+    let mut runtime = QuickerRuntime::new(&data, state_scope, control.cloned());
     match runtime.run_steps(&data.steps) {
         Ok(StepFlow::Continue) => match runtime.last_message {
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
@@ -2519,7 +2596,9 @@ fn execute_quicker_launch(document: &QuickerActionDocument) -> ExecResult {
     if launch.arguments.trim().is_empty() {
         return match open_target(&launch.file_name) {
             Ok(_) => ExecResult::Ok,
-            Err(err) => ExecResult::Err(format!("Failed to launch '{}': {}", launch.file_name, err)),
+            Err(err) => {
+                ExecResult::Err(format!("Failed to launch '{}': {}", launch.file_name, err))
+            }
         };
     }
 
@@ -2540,18 +2619,30 @@ fn execute_quicker_launch(document: &QuickerActionDocument) -> ExecResult {
     spawn_program(&launch.file_name, &args, working_dir.as_deref())
 }
 
-fn execute_quicker_key_macro(document: &QuickerActionDocument) -> ExecResult {
+fn execute_quicker_key_macro(
+    document: &QuickerActionDocument,
+    control: Option<&ActionExecutionControl>,
+) -> ExecResult {
     let script = document.data_text();
     if script.trim().is_empty() {
         return ExecResult::Err("Quicker key macro action is missing Data".into());
     }
 
-    for line in script.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in script
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if let Err(err) = ensure_not_cancelled(control) {
+            return ExecResult::Err(err);
+        }
         if let Some(delay) = line.strip_prefix(';') {
             let Ok(delay_ms) = delay.trim().parse::<u64>() else {
                 return ExecResult::Err(format!("Invalid macro delay: {line}"));
             };
-            sleep_millis(delay_ms);
+            if let Err(err) = sleep_millis(delay_ms, control) {
+                return ExecResult::Err(err);
+            }
             continue;
         }
 
@@ -2609,7 +2700,8 @@ fn compile_step_regex(
         prefix.push_str("(?m)");
     }
 
-    Regex::new(&format!("{prefix}{pattern}")).map_err(|err| format!("Invalid regex '{pattern}': {err}"))
+    Regex::new(&format!("{prefix}{pattern}"))
+        .map_err(|err| format!("Invalid regex '{pattern}': {err}"))
 }
 
 fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
@@ -2706,7 +2798,11 @@ fn value_to_string(value: &Value) -> String {
             }
         }
         Value::Number(value) => value.to_string(),
-        Value::Array(values) => values.iter().map(value_to_string).collect::<Vec<_>>().join(","),
+        Value::Array(values) => values
+            .iter()
+            .map(value_to_string)
+            .collect::<Vec<_>>()
+            .join(","),
         Value::Object(_) => value.to_string(),
     }
 }
@@ -2770,9 +2866,7 @@ fn quicker_macro_key(token: &str) -> Option<&'static str> {
         "TAB" => Some("Tab"),
         "SPACE" => Some("space"),
         "BACK" | "BACKSPACE" => Some("BackSpace"),
-        _ => token
-            .strip_prefix("VK_")
-            .and_then(macro_virtual_key_name),
+        _ => token.strip_prefix("VK_").and_then(macro_virtual_key_name),
     }
 }
 
@@ -3019,7 +3113,8 @@ fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Resu
     store.insert(scope.to_string(), state.clone());
     let content = serde_json::to_string_pretty(&store)
         .map_err(|err| format!("Failed to serialize action state store: {err}"))?;
-    std::fs::write(&path, content).map_err(|err| format!("Failed to save action state store: {err}"))
+    std::fs::write(&path, content)
+        .map_err(|err| format!("Failed to save action state store: {err}"))
 }
 
 fn show_message_box(title: &str, message: &str) -> Result<(), String> {
@@ -3137,7 +3232,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
             .arg("-e")
             .arg(format!(
                 "choose folder with prompt {:?}",
-                if prompt.is_empty() { "Select folder" } else { prompt }
+                if prompt.is_empty() {
+                    "Select folder"
+                } else {
+                    prompt
+                }
             ))
             .output()
             .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
@@ -3206,7 +3305,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     }
 }
 
-fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) -> Result<String, String> {
+fn prompt_user_input_dialog(
+    prompt: &str,
+    default_value: &str,
+    multiline: bool,
+) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_prompt_user_input_dialog(prompt, default_value, multiline) {
         return result;
@@ -3225,7 +3328,9 @@ fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) 
             .output()
             .map_err(|err| format!("Failed to open input dialog: {err}"))?;
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string())
         } else {
             Err(format!("Input dialog exited with {}", output.status))
         }
@@ -3241,7 +3346,9 @@ fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) 
             .output()
             .map_err(|err| format!("Failed to open input dialog: {err}"))?;
         if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+            Ok(String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string())
         } else {
             Err(format!("Input dialog exited with {}", output.status))
         }
@@ -3261,7 +3368,9 @@ fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) 
                 .output()
                 .map_err(|err| format!("Failed to open input dialog: {err}"))?;
             if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+                Ok(String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string())
             } else {
                 Err(format!("Input dialog exited with {}", output.status))
             }
@@ -3277,7 +3386,9 @@ fn prompt_user_input_dialog(prompt: &str, default_value: &str, multiline: bool) 
                 .output()
                 .map_err(|err| format!("Failed to open input dialog: {err}"))?;
             if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+                Ok(String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string())
             } else {
                 Err(format!("Input dialog exited with {}", output.status))
             }
@@ -3338,13 +3449,14 @@ fn download_to_file(
     save_dir: &str,
     save_name: &str,
     options: &DownloadRequestOptions,
+    control: Option<&ActionExecutionControl>,
 ) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_download_to_file(url, save_dir, save_name, options) {
         return result;
     }
 
-    const DOWNLOAD_CONNECT_TIMEOUT_SECS: &str = "10";
+    const DOWNLOAD_CONNECT_TIMEOUT_SECS: &str = "30";
     const DOWNLOAD_MAX_TIME_SECS: &str = "180";
     const DEFAULT_DOWNLOAD_USER_AGENT: &str =
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36";
@@ -3370,10 +3482,7 @@ fn download_to_file(
         let headers_clause = if headers_literal.is_empty() {
             "$headers=@{};".to_string()
         } else {
-            format!(
-                "$headers=@{{{}}};",
-                headers_literal
-            )
+            format!("$headers=@{{{}}};", headers_literal)
         };
         let cookie_clause = options
             .cookie
@@ -3382,20 +3491,17 @@ fn download_to_file(
             .map(|cookie| format!("$headers['Cookie']='{}';", ps_single_quote(cookie)))
             .unwrap_or_default();
 
-        Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(format!(
-                "{}{}Invoke-WebRequest -Uri '{}' -OutFile '{}' -TimeoutSec {} -Headers $headers -UserAgent '{}'",
-                headers_clause,
-                cookie_clause,
-                ps_single_quote(url),
-                ps_single_quote(&target.to_string_lossy()),
-                DOWNLOAD_MAX_TIME_SECS,
-                ps_single_quote(user_agent)
-            ))
-            .status()
-            .map_err(|err| format!("Failed to download file: {err}"))?
+        let mut command = Command::new("powershell");
+        command.arg("-NoProfile").arg("-Command").arg(format!(
+            "{}{}Invoke-WebRequest -Uri '{}' -OutFile '{}' -TimeoutSec {} -Headers $headers -UserAgent '{}'",
+            headers_clause,
+            cookie_clause,
+            ps_single_quote(url),
+            ps_single_quote(&target.to_string_lossy()),
+            DOWNLOAD_MAX_TIME_SECS,
+            ps_single_quote(user_agent)
+        ));
+        run_command_for_status(command, control, "download command")?
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -3418,15 +3524,15 @@ fn download_to_file(
         for (name, value) in &options.headers {
             command.arg("-H").arg(format!("{name}: {value}"));
         }
-        if let Some(cookie) = options.cookie.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(cookie) = options
+            .cookie
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             command.arg("--cookie").arg(cookie);
         }
-        command
-            .arg(url)
-            .arg("-o")
-            .arg(&target)
-            .status()
-            .map_err(|err| format!("Failed to download file: {err}"))?
+        command.arg(url).arg("-o").arg(&target);
+        run_command_for_status(command, control, "download command")?
     } else if which::which("wget").is_ok() {
         let mut command = Command::new("wget");
         command
@@ -3439,15 +3545,15 @@ fn download_to_file(
         for (name, value) in &options.headers {
             command.arg("--header").arg(format!("{name}: {value}"));
         }
-        if let Some(cookie) = options.cookie.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(cookie) = options
+            .cookie
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             command.arg("--header").arg(format!("Cookie: {cookie}"));
         }
-        command
-            .arg("-O")
-            .arg(&target)
-            .arg(url)
-            .status()
-            .map_err(|err| format!("Failed to download file: {err}"))?
+        command.arg("-O").arg(&target).arg(url);
+        run_command_for_status(command, control, "download command")?
     } else {
         return Err("No supported download backend was found".into());
     };
@@ -3475,8 +3581,8 @@ fn read_file_path_reference(path: &str) -> Result<String, String> {
 
 fn read_binary_file(path: &str) -> Result<Vec<u8>, String> {
     let normalized = normalize_runtime_path(path);
-    let mut file =
-        fs::File::open(&normalized).map_err(|err| format!("Failed to open file '{}': {err}", normalized))?;
+    let mut file = fs::File::open(&normalized)
+        .map_err(|err| format!("Failed to open file '{}': {err}", normalized))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|err| format!("Failed to read file '{}': {err}", normalized))?;
@@ -3520,8 +3626,18 @@ fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
             }
             if matches!(
                 marker,
-                0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD
-                    | 0xCE | 0xCF
+                0xC0 | 0xC1
+                    | 0xC2
+                    | 0xC3
+                    | 0xC5
+                    | 0xC6
+                    | 0xC7
+                    | 0xC9
+                    | 0xCA
+                    | 0xCB
+                    | 0xCD
+                    | 0xCE
+                    | 0xCF
             ) {
                 let height = u16::from_be_bytes([bytes[idx + 3], bytes[idx + 4]]) as u32;
                 let width = u16::from_be_bytes([bytes[idx + 5], bytes[idx + 6]]) as u32;
@@ -3534,8 +3650,7 @@ fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0];
@@ -3614,7 +3729,72 @@ fn clipboard_target(text: &str) -> Option<String> {
     None
 }
 
-fn run_shell_command(script: &str, shell: &str) -> ExecResult {
+fn cancellation_error() -> String {
+    "Action cancelled".into()
+}
+
+fn ensure_not_cancelled(control: Option<&ActionExecutionControl>) -> Result<(), String> {
+    if control.is_some_and(ActionExecutionControl::is_cancelled) {
+        Err(cancellation_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn wait_for_child_cancelable(
+    child: &mut Child,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<ExitStatus, String> {
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("Failed while waiting for {context}: {err}"))?
+        {
+            return Ok(status);
+        }
+
+        if control.is_some_and(ActionExecutionControl::is_cancelled) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(cancellation_error());
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn run_command_for_status(
+    mut command: Command,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<ExitStatus, String> {
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Failed to start {context}: {err}"))?;
+    wait_for_child_cancelable(&mut child, control, context)
+}
+
+fn run_command_for_output(
+    mut command: Command,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Failed to start {context}: {err}"))?;
+    wait_for_child_cancelable(&mut child, control, context)?;
+    child
+        .wait_with_output()
+        .map_err(|err| format!("Failed to collect {context} output: {err}"))
+}
+
+fn run_shell_command(
+    script: &str,
+    shell: &str,
+    control: Option<&ActionExecutionControl>,
+) -> ExecResult {
     #[cfg(test)]
     if let Some(result) = test_run_shell_command(script, shell) {
         return result;
@@ -3629,7 +3809,10 @@ fn run_shell_command(script: &str, shell: &str) -> ExecResult {
         (shell, "-c")
     };
 
-    match Command::new(sh).arg(flag).arg(script).output() {
+    let mut command = Command::new(sh);
+    command.arg(flag).arg(script);
+
+    match run_command_for_output(command, control, &format!("shell '{shell}'")) {
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -3710,15 +3893,22 @@ fn type_input_text(text: &str) -> Result<(), String> {
         })
 }
 
-fn sleep_millis(delay_ms: u64) {
+fn sleep_millis(delay_ms: u64, control: Option<&ActionExecutionControl>) -> Result<(), String> {
     #[cfg(test)]
     {
         if test_sleep_millis(delay_ms) {
-            return;
+            return ensure_not_cancelled(control);
         }
     }
 
-    thread::sleep(Duration::from_millis(delay_ms));
+    let mut remaining = delay_ms;
+    while remaining > 0 {
+        ensure_not_cancelled(control)?;
+        let slice = remaining.min(50);
+        thread::sleep(Duration::from_millis(slice));
+        remaining -= slice;
+    }
+    Ok(())
 }
 
 fn parse_quicker_action_document(input: &str) -> Result<QuickerActionDocument, String> {
@@ -3955,7 +4145,10 @@ fn test_show_message_box(title: &str, message: &str) -> Option<Result<(), String
 }
 
 #[cfg(test)]
-fn test_select_folder_dialog(_prompt: &str, _init_dir: Option<&str>) -> Option<Result<String, String>> {
+fn test_select_folder_dialog(
+    _prompt: &str,
+    _init_dir: Option<&str>,
+) -> Option<Result<String, String>> {
     with_action_test_runtime(|runtime| runtime.folder_dialog_results.pop_front())
 }
 
@@ -3992,12 +4185,11 @@ fn test_download_to_file(
                 let _ = fs::create_dir_all(parent);
             }
             let png_1x1 = [
-                0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I',
-                b'H', b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02,
-                0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, b'I', b'D',
-                b'A', b'T', 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01,
-                0x00, 0x18, 0xDD, 0x8D, 0x18, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D',
-                0xAE, 0x42, 0x60, 0x82,
+                0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+                b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+                0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, b'I', b'D', b'A', b'T', 0x08,
+                0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D,
+                0x18, 0x00, 0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
             ];
             let _ = fs::write(&normalized, png_1x1);
             Some(Ok(path))
@@ -4091,7 +4283,12 @@ mod tests {
 
         assert_eq!(parsed.name, "统一格式");
         assert_eq!(parsed.description, "将粘贴/导入内容的自带样式去除");
-        assert_eq!(parsed.icon.as_deref(), Some("https://files.getquicker.net/_icons/2D62F4E62FD40AC3F99CB7ABE05B9E2FAE141A3B.png"));
+        assert_eq!(
+            parsed.icon.as_deref(),
+            Some(
+                "https://files.getquicker.net/_icons/2D62F4E62FD40AC3F99CB7ABE05B9E2FAE141A3B.png"
+            )
+        );
         assert_eq!(
             parsed.to_quicker_plugin_json().unwrap(),
             Action::from_quicker_plugin_json(&sample)
@@ -4106,8 +4303,9 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        let action = Action::from_quicker_plugin_json(&sample("sample/快捷键_20260319_105627.json"))
-            .expect("sample should parse");
+        let action =
+            Action::from_quicker_plugin_json(&sample("sample/快捷键_20260319_105627.json"))
+                .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4132,10 +4330,7 @@ mod tests {
 
         assert_eq!(result, ExecResult::Ok);
         with_action_test_runtime(|runtime| {
-            assert_eq!(
-                runtime.key_calls,
-                vec![(vec!["alt".into()], "c".into())]
-            );
+            assert_eq!(runtime.key_calls, vec![(vec!["alt".into()], "c".into())]);
         });
     }
 
@@ -4164,9 +4359,9 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
             runtime.key_results.push_back(Ok(()));
-            runtime.html_clipboard_reads.push_back(Ok(
-                r#"<img data-latex-code="x^2">"#.into(),
-            ));
+            runtime
+                .html_clipboard_reads
+                .push_back(Ok(r#"<img data-latex-code="x^2">"#.into()));
             runtime.clipboard_write_results.push_back(Ok(()));
             runtime.key_results.push_back(Ok(()));
         });
@@ -4241,10 +4436,9 @@ mod tests {
             runtime.key_results.push_back(Ok(()));
         });
 
-        let action = Action::from_quicker_plugin_json(
-            &sample("sample/公式转图片_20260319_105519.json"),
-        )
-        .expect("sample should parse");
+        let action =
+            Action::from_quicker_plugin_json(&sample("sample/公式转图片_20260319_105519.json"))
+                .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4345,9 +4539,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_supported_plugin_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(
-            &sample("sample/快捷键_20260319_105627.json"),
-        )
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
+            "sample/快捷键_20260319_105627.json",
+        ))
         .expect("sample should import");
 
         assert_eq!(draft.title, "快捷键");
@@ -4391,9 +4585,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_key_macro_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(
-            &sample("sample/定位_20260319_105649.json"),
-        )
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
+            "sample/定位_20260319_105649.json",
+        ))
         .expect("key macro should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::KeyMacro);
@@ -4408,9 +4602,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_open_app_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(
-            &sample("sample/ScreenToGif_20260319_095543.json"),
-        )
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
+            "sample/ScreenToGif_20260319_095543.json",
+        ))
         .expect("launcher should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::OpenApp);
@@ -4422,9 +4616,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_formula_to_image_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(
-            &sample("sample/公式转图片_20260319_105519.json"),
-        )
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
+            "sample/公式转图片_20260319_105519.json",
+        ))
         .expect("formula sample should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
@@ -4456,8 +4650,8 @@ mod tests {
     fn quicker_plugin_data_parser_accepts_raw_control_chars_inside_inner_json() {
         let broken = "{\n  \"ActionType\": 24,\n  \"Title\": \"Demo\",\n  \"Description\": \"\",\n  \"Icon\": null,\n  \"Data\": \"{\\\"LimitSingleInstance\\\":false,\\\"SummaryExpression\\\":\\\"\\\",\\\"SubPrograms\\\":[],\\\"Variables\\\":[{\\\"Key\\\":\\\"html\\\",\\\"Type\\\":0,\\\"DefaultValue\\\":\\\"line1\nline2\\\",\\\"SaveState\\\":false}],\\\"Steps\\\":[]}\" \n}";
 
-        let draft =
-            LowCodePluginDraft::from_quicker_plugin_json(broken).expect("inner parser should sanitize");
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(broken)
+            .expect("inner parser should sanitize");
 
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.title, "Demo");
@@ -4578,6 +4772,29 @@ mod tests {
         assert_eq!(result, ExecResult::OkWithMessage("done".into()));
         with_action_test_runtime(|runtime| {
             assert_eq!(runtime.shell_calls, vec![("sh".into(), "echo hi".into())]);
+        });
+    }
+
+    #[test]
+    fn quicker_plugin_can_be_cancelled_before_delay_step_runs() {
+        reset_action_test_runtime();
+        let control = ActionExecutionControl::new();
+        control.cancel();
+
+        let sample = r#"{
+          "ActionType": 24,
+          "Title": "Delay Demo",
+          "Description": "",
+          "Icon": null,
+          "Data": "{\"LimitSingleInstance\":false,\"SummaryExpression\":\"\",\"SubPrograms\":[],\"Variables\":[],\"Steps\":[{\"StepRunnerKey\":\"sys:delay\",\"InputParams\":{\"delayMs\":{\"VarKey\":null,\"Value\":\"1000\"}},\"OutputParams\":{},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0},{\"StepRunnerKey\":\"sys:notify\",\"InputParams\":{\"msg\":{\"VarKey\":null,\"Value\":\"done\"}},\"OutputParams\":{},\"IfSteps\":null,\"ElseSteps\":null,\"Disabled\":false,\"Collapsed\":false,\"DelayMs\":0}]}"
+        }"#;
+
+        let action = Action::from_quicker_plugin_json(sample).expect("sample should parse");
+        let result = action.execute_with_control(Some(&control));
+
+        assert_eq!(result, ExecResult::Err("Action cancelled".into()));
+        with_action_test_runtime(|runtime| {
+            assert!(runtime.delays.is_empty());
         });
     }
 

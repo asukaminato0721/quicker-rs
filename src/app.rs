@@ -1,7 +1,7 @@
 use crate::action::{
-    Action, ActionKind, ExecResult, LowCodeClipboardFormat, LowCodeKeyMacroStep,
-    LowCodePluginDraft, LowCodePluginKind, LowCodePluginStep, LowCodeStringProcessMethod,
-    LowCodeWriteClipboardKind,
+    Action, ActionExecutionControl, ActionKind, ExecResult, LowCodeClipboardFormat,
+    LowCodeKeyMacroStep, LowCodePluginDraft, LowCodePluginKind, LowCodePluginStep,
+    LowCodeStringProcessMethod, LowCodeWriteClipboardKind,
 };
 use crate::config::Config;
 use crate::focus::{self, FocusTracker};
@@ -147,6 +147,7 @@ pub struct QuickerApp {
     plugin_new_key_macro_step_idx: usize,
     plugin_new_step_idx: usize,
     edit_target: Option<ActionEditTarget>,
+    action_control: Option<ActionExecutionControl>,
     pending_action_name: Option<String>,
     action_result_rx: Option<Receiver<ActionExecutionMessage>>,
 }
@@ -200,6 +201,7 @@ impl QuickerApp {
             plugin_new_key_macro_step_idx: 0,
             plugin_new_step_idx: 0,
             edit_target: None,
+            action_control: None,
             pending_action_name: None,
             action_result_rx: None,
         }
@@ -236,19 +238,33 @@ impl QuickerApp {
 
         let action_name = action.name.clone();
         let action_clone = action.clone();
+        let control = ActionExecutionControl::new();
         let (tx, rx) = mpsc::channel();
         let repaint_ctx = ctx.clone();
+        self.action_control = Some(control.clone());
         self.pending_action_name = Some(action_name.clone());
         self.action_result_rx = Some(rx);
 
         thread::spawn(move || {
-            let result = action_clone.execute();
+            let result = action_clone.execute_with_control(Some(&control));
             let _ = tx.send(ActionExecutionMessage {
                 action_name,
                 result,
             });
             repaint_ctx.request_repaint();
         });
+    }
+
+    fn request_cancel_running_action(&mut self, ctx: &egui::Context) {
+        let Some(control) = &self.action_control else {
+            return;
+        };
+        if control.is_cancelled() {
+            return;
+        }
+        control.cancel();
+        self.show_toast("Cancelling action...".into(), false);
+        ctx.request_repaint();
     }
 
     fn trigger_action(
@@ -910,14 +926,11 @@ impl QuickerApp {
                         egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
                             .strong(),
                     );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            if ui.small_button("Delete").clicked() {
-                                remove = true;
-                            }
-                        },
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Delete").clicked() {
+                            remove = true;
+                        }
+                    });
                 });
                 ui.add_space(6.0);
 
@@ -969,7 +982,10 @@ impl QuickerApp {
         let mut move_request = None;
         let drop_frame = egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 4))
-            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+            .stroke(egui::Stroke::new(
+                1.0,
+                ui.visuals().widgets.inactive.bg_stroke.color,
+            ));
 
         if steps.is_empty() {
             ui.label(egui::RichText::new("No steps in this branch.").weak());
@@ -1036,336 +1052,337 @@ impl QuickerApp {
             egui::Frame::group(ui.style())
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(scope) = drag_scope {
-                        let _ = ui.dnd_drag_source(
-                            egui::Id::new((scope, index, "handle")),
-                            StepDragPayload {
-                                scope: scope.to_string(),
-                                from: index,
-                            },
-                            |ui| {
-                                ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
-                            },
+                    ui.horizontal(|ui| {
+                        if let Some(scope) = drag_scope {
+                            let _ = ui.dnd_drag_source(
+                                egui::Id::new((scope, index, "handle")),
+                                StepDragPayload {
+                                    scope: scope.to_string(),
+                                    from: index,
+                                },
+                                |ui| {
+                                    ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                                },
+                            );
+                        } else {
+                            ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
+                                .strong(),
                         );
-                    } else {
-                        ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
-                    }
-                    ui.label(
-                        egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
-                            .strong(),
-                    );
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("Delete").clicked() {
                                 action.remove = true;
                             }
-                        },
-                    );
-                });
-                ui.add_space(6.0);
+                        });
+                    });
+                    ui.add_space(6.0);
 
-                match step {
-                    LowCodePluginStep::OpenUrl { url } => {
-                        ui.label("URL or $variable:");
-                        ui.text_edit_singleline(url);
-                    }
-                    LowCodePluginStep::Delay { delay_ms } => {
-                        ui.label("Delay (ms):");
-                        ui.add(egui::DragValue::new(delay_ms).range(0..=60_000).speed(10));
-                    }
-                    LowCodePluginStep::SimpleIf {
-                        condition,
-                        if_steps,
-                        else_steps,
-                    } => {
-                        ui.label("Condition value or $variable:");
-                        ui.text_edit_singleline(condition);
-                        ui.add_space(6.0);
-                        ui.group(|ui| {
-                            ui.label(egui::RichText::new("If Branch").strong());
-                            Self::render_nested_plugin_step_list(
-                                ui,
-                                &format!("{id_scope}_if"),
-                                if_steps,
-                            );
-                        });
-                        ui.add_space(6.0);
-                        ui.group(|ui| {
-                            ui.label(egui::RichText::new("Else Branch").strong());
-                            Self::render_nested_plugin_step_list(
-                                ui,
-                                &format!("{id_scope}_else"),
-                                else_steps,
-                            );
-                        });
-                    }
-                    LowCodePluginStep::StateStorageRead {
-                        key,
-                        default_value,
-                        output_value,
-                        output_is_empty,
-                    } => {
-                        ui.label("State key:");
-                        ui.text_edit_singleline(key);
-                        ui.label("Default value:");
-                        ui.text_edit_singleline(default_value);
-                        ui.label("Output value variable:");
-                        ui.text_edit_singleline(output_value);
-                        ui.label("Output empty-flag variable:");
-                        ui.text_edit_singleline(output_is_empty);
-                    }
-                    LowCodePluginStep::StateStorageWrite { key, value } => {
-                        ui.label("State key:");
-                        ui.text_edit_singleline(key);
-                        ui.label("Value or $variable:");
-                        ui.text_edit_singleline(value);
-                    }
-                    LowCodePluginStep::MsgBox { title, message } => {
-                        ui.label("Title:");
-                        ui.text_edit_singleline(title);
-                        ui.label("Message:");
-                        ui.text_edit_singleline(message);
-                    }
-                    LowCodePluginStep::SelectFolder { prompt, output } => {
-                        ui.label("Prompt:");
-                        ui.text_edit_singleline(prompt);
-                        ui.label("Output path variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::UserInput {
-                        prompt,
-                        default_value,
-                        multiline,
-                        output,
-                    } => {
-                        ui.label("Prompt:");
-                        ui.text_edit_singleline(prompt);
-                        ui.label("Default value:");
-                        ui.text_edit_singleline(default_value);
-                        ui.checkbox(multiline, "Multiline");
-                        ui.label("Output text variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::DownloadFile {
-                        url,
-                        save_path,
-                        save_name,
-                        output_success,
-                    } => {
-                        ui.label("URL or $variable:");
-                        ui.text_edit_singleline(url);
-                        ui.label("Save folder or $variable:");
-                        ui.text_edit_singleline(save_path);
-                        ui.label("File name:");
-                        ui.text_edit_singleline(save_name);
-                        ui.label("Success flag variable:");
-                        ui.text_edit_singleline(output_success);
-                    }
-                    LowCodePluginStep::ReadFileImage { path, output } => {
-                        ui.label("Image path or expression:");
-                        ui.text_edit_singleline(path);
-                        ui.label("Output image variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::ImageInfo {
-                        source,
-                        width_output,
-                        height_output,
-                    } => {
-                        ui.label("Source image variable:");
-                        ui.text_edit_singleline(source);
-                        ui.label("Width output variable:");
-                        ui.text_edit_singleline(width_output);
-                        ui.label("Height output variable:");
-                        ui.text_edit_singleline(height_output);
-                    }
-                    LowCodePluginStep::ImageToBase64 { source, output } => {
-                        ui.label("Source image variable:");
-                        ui.text_edit_singleline(source);
-                        ui.label("Output base64 variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::FileDelete { path, disabled } => {
-                        ui.label("File path or expression:");
-                        ui.text_edit_singleline(path);
-                        ui.checkbox(disabled, "Disabled");
-                    }
-                    LowCodePluginStep::KeyInput { modifiers, key } => {
-                        ui.label("Modifiers (ctrl+shift style):");
-                        ui.text_edit_singleline(modifiers);
-                        ui.label("Key:");
-                        ui.text_edit_singleline(key);
-                    }
-                    LowCodePluginStep::GetClipboard { format, output } => {
-                        ui.horizontal(|ui| {
-                            ui.label("Format:");
-                            egui::ComboBox::from_id_salt(("clip_format", index))
-                                .selected_text(match format {
-                                    LowCodeClipboardFormat::Text => "Text",
-                                    LowCodeClipboardFormat::Html => "HTML",
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(format, LowCodeClipboardFormat::Text, "Text");
-                                    ui.selectable_value(format, LowCodeClipboardFormat::Html, "HTML");
-                                });
-                        });
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::WriteClipboard {
-                        clipboard_type,
-                        source,
-                        alt_text,
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label("Clipboard type:");
-                            egui::ComboBox::from_id_salt(("write_clip_kind", index))
-                                .selected_text(match clipboard_type {
-                                    LowCodeWriteClipboardKind::Auto => "Auto",
-                                    LowCodeWriteClipboardKind::Text => "Text",
-                                    LowCodeWriteClipboardKind::Html => "HTML",
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        clipboard_type,
-                                        LowCodeWriteClipboardKind::Auto,
-                                        "Auto",
-                                    );
-                                    ui.selectable_value(
-                                        clipboard_type,
-                                        LowCodeWriteClipboardKind::Text,
-                                        "Text",
-                                    );
-                                    ui.selectable_value(
-                                        clipboard_type,
-                                        LowCodeWriteClipboardKind::Html,
-                                        "HTML",
-                                    );
-                                });
-                        });
-                        ui.label("Source text or $variable:");
-                        ui.text_edit_singleline(source);
-                        if matches!(clipboard_type, LowCodeWriteClipboardKind::Html) {
-                            ui.label("Plain-text fallback:");
-                            ui.text_edit_singleline(alt_text);
+                    match step {
+                        LowCodePluginStep::OpenUrl { url } => {
+                            ui.label("URL or $variable:");
+                            ui.text_edit_singleline(url);
                         }
-                    }
-                    LowCodePluginStep::RegexExtract {
-                        input,
-                        pattern,
-                        output,
-                    } => {
-                        ui.label("Input text or $variable:");
-                        ui.text_edit_singleline(input);
-                        ui.label("Regex pattern:");
-                        ui.text_edit_singleline(pattern);
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::StringProcess {
-                        input,
-                        method,
-                        output,
-                    } => {
-                        ui.label("Input text or $variable:");
-                        ui.text_edit_singleline(input);
-                        ui.horizontal(|ui| {
-                            ui.label("Method:");
-                            egui::ComboBox::from_id_salt(("string_process", index))
-                                .selected_text(match method {
-                                    LowCodeStringProcessMethod::ToLower => "toLower",
-                                    LowCodeStringProcessMethod::UrlEncode => "urlEncode",
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(
-                                        method,
-                                        LowCodeStringProcessMethod::ToLower,
-                                        "toLower",
-                                    );
-                                    ui.selectable_value(
-                                        method,
-                                        LowCodeStringProcessMethod::UrlEncode,
-                                        "urlEncode",
-                                    );
-                                });
-                        });
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::SplitString {
-                        input,
-                        separator,
-                        output,
-                    } => {
-                        ui.label("Input text or $variable:");
-                        ui.text_edit_singleline(input);
-                        ui.label("Separator (supports escapes like \\r\\n):");
-                        ui.text_edit_singleline(separator);
-                        ui.label("Output array variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::Assign { expression, output } => {
-                        ui.label("Expression or source value:");
-                        ui.text_edit_singleline(expression);
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::StrReplace {
-                        input,
-                        pattern,
-                        replacement,
-                        use_regex,
-                        output,
-                    } => {
-                        ui.label("Input text or $variable:");
-                        ui.text_edit_singleline(input);
-                        ui.label("Pattern / old text:");
-                        ui.text_edit_singleline(pattern);
-                        ui.label("Replacement:");
-                        ui.text_edit_singleline(replacement);
-                        ui.checkbox(use_regex, "Use regex");
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
-                    }
-                    LowCodePluginStep::FormatString {
-                        template,
-                        p0,
-                        p1,
-                        p2,
-                        p3,
-                        p4,
-                        output,
-                    } => {
-                        ui.label("Template:");
-                        ui.text_edit_singleline(template);
-                        for (label, value) in [
-                            ("P0", p0),
-                            ("P1", p1),
-                            ("P2", p2),
-                            ("P3", p3),
-                            ("P4", p4),
-                        ] {
-                            ui.label(format!("{label} value or $variable:"));
+                        LowCodePluginStep::Delay { delay_ms } => {
+                            ui.label("Delay (ms):");
+                            ui.add(egui::DragValue::new(delay_ms).range(0..=60_000).speed(10));
+                        }
+                        LowCodePluginStep::SimpleIf {
+                            condition,
+                            if_steps,
+                            else_steps,
+                        } => {
+                            ui.label("Condition value or $variable:");
+                            ui.text_edit_singleline(condition);
+                            ui.add_space(6.0);
+                            ui.group(|ui| {
+                                ui.label(egui::RichText::new("If Branch").strong());
+                                Self::render_nested_plugin_step_list(
+                                    ui,
+                                    &format!("{id_scope}_if"),
+                                    if_steps,
+                                );
+                            });
+                            ui.add_space(6.0);
+                            ui.group(|ui| {
+                                ui.label(egui::RichText::new("Else Branch").strong());
+                                Self::render_nested_plugin_step_list(
+                                    ui,
+                                    &format!("{id_scope}_else"),
+                                    else_steps,
+                                );
+                            });
+                        }
+                        LowCodePluginStep::StateStorageRead {
+                            key,
+                            default_value,
+                            output_value,
+                            output_is_empty,
+                        } => {
+                            ui.label("State key:");
+                            ui.text_edit_singleline(key);
+                            ui.label("Default value:");
+                            ui.text_edit_singleline(default_value);
+                            ui.label("Output value variable:");
+                            ui.text_edit_singleline(output_value);
+                            ui.label("Output empty-flag variable:");
+                            ui.text_edit_singleline(output_is_empty);
+                        }
+                        LowCodePluginStep::StateStorageWrite { key, value } => {
+                            ui.label("State key:");
+                            ui.text_edit_singleline(key);
+                            ui.label("Value or $variable:");
                             ui.text_edit_singleline(value);
                         }
-                        ui.label("Output variable:");
-                        ui.text_edit_singleline(output);
+                        LowCodePluginStep::MsgBox { title, message } => {
+                            ui.label("Title:");
+                            ui.text_edit_singleline(title);
+                            ui.label("Message:");
+                            ui.text_edit_singleline(message);
+                        }
+                        LowCodePluginStep::SelectFolder { prompt, output } => {
+                            ui.label("Prompt:");
+                            ui.text_edit_singleline(prompt);
+                            ui.label("Output path variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::UserInput {
+                            prompt,
+                            default_value,
+                            multiline,
+                            output,
+                        } => {
+                            ui.label("Prompt:");
+                            ui.text_edit_singleline(prompt);
+                            ui.label("Default value:");
+                            ui.text_edit_singleline(default_value);
+                            ui.checkbox(multiline, "Multiline");
+                            ui.label("Output text variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::DownloadFile {
+                            url,
+                            save_path,
+                            save_name,
+                            output_success,
+                        } => {
+                            ui.label("URL or $variable:");
+                            ui.text_edit_singleline(url);
+                            ui.label("Save folder or $variable:");
+                            ui.text_edit_singleline(save_path);
+                            ui.label("File name:");
+                            ui.text_edit_singleline(save_name);
+                            ui.label("Success flag variable:");
+                            ui.text_edit_singleline(output_success);
+                        }
+                        LowCodePluginStep::ReadFileImage { path, output } => {
+                            ui.label("Image path or expression:");
+                            ui.text_edit_singleline(path);
+                            ui.label("Output image variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::ImageInfo {
+                            source,
+                            width_output,
+                            height_output,
+                        } => {
+                            ui.label("Source image variable:");
+                            ui.text_edit_singleline(source);
+                            ui.label("Width output variable:");
+                            ui.text_edit_singleline(width_output);
+                            ui.label("Height output variable:");
+                            ui.text_edit_singleline(height_output);
+                        }
+                        LowCodePluginStep::ImageToBase64 { source, output } => {
+                            ui.label("Source image variable:");
+                            ui.text_edit_singleline(source);
+                            ui.label("Output base64 variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::FileDelete { path, disabled } => {
+                            ui.label("File path or expression:");
+                            ui.text_edit_singleline(path);
+                            ui.checkbox(disabled, "Disabled");
+                        }
+                        LowCodePluginStep::KeyInput { modifiers, key } => {
+                            ui.label("Modifiers (ctrl+shift style):");
+                            ui.text_edit_singleline(modifiers);
+                            ui.label("Key:");
+                            ui.text_edit_singleline(key);
+                        }
+                        LowCodePluginStep::GetClipboard { format, output } => {
+                            ui.horizontal(|ui| {
+                                ui.label("Format:");
+                                egui::ComboBox::from_id_salt(("clip_format", index))
+                                    .selected_text(match format {
+                                        LowCodeClipboardFormat::Text => "Text",
+                                        LowCodeClipboardFormat::Html => "HTML",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            format,
+                                            LowCodeClipboardFormat::Text,
+                                            "Text",
+                                        );
+                                        ui.selectable_value(
+                                            format,
+                                            LowCodeClipboardFormat::Html,
+                                            "HTML",
+                                        );
+                                    });
+                            });
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::WriteClipboard {
+                            clipboard_type,
+                            source,
+                            alt_text,
+                        } => {
+                            ui.horizontal(|ui| {
+                                ui.label("Clipboard type:");
+                                egui::ComboBox::from_id_salt(("write_clip_kind", index))
+                                    .selected_text(match clipboard_type {
+                                        LowCodeWriteClipboardKind::Auto => "Auto",
+                                        LowCodeWriteClipboardKind::Text => "Text",
+                                        LowCodeWriteClipboardKind::Html => "HTML",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            clipboard_type,
+                                            LowCodeWriteClipboardKind::Auto,
+                                            "Auto",
+                                        );
+                                        ui.selectable_value(
+                                            clipboard_type,
+                                            LowCodeWriteClipboardKind::Text,
+                                            "Text",
+                                        );
+                                        ui.selectable_value(
+                                            clipboard_type,
+                                            LowCodeWriteClipboardKind::Html,
+                                            "HTML",
+                                        );
+                                    });
+                            });
+                            ui.label("Source text or $variable:");
+                            ui.text_edit_singleline(source);
+                            if matches!(clipboard_type, LowCodeWriteClipboardKind::Html) {
+                                ui.label("Plain-text fallback:");
+                                ui.text_edit_singleline(alt_text);
+                            }
+                        }
+                        LowCodePluginStep::RegexExtract {
+                            input,
+                            pattern,
+                            output,
+                        } => {
+                            ui.label("Input text or $variable:");
+                            ui.text_edit_singleline(input);
+                            ui.label("Regex pattern:");
+                            ui.text_edit_singleline(pattern);
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::StringProcess {
+                            input,
+                            method,
+                            output,
+                        } => {
+                            ui.label("Input text or $variable:");
+                            ui.text_edit_singleline(input);
+                            ui.horizontal(|ui| {
+                                ui.label("Method:");
+                                egui::ComboBox::from_id_salt(("string_process", index))
+                                    .selected_text(match method {
+                                        LowCodeStringProcessMethod::ToLower => "toLower",
+                                        LowCodeStringProcessMethod::UrlEncode => "urlEncode",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            method,
+                                            LowCodeStringProcessMethod::ToLower,
+                                            "toLower",
+                                        );
+                                        ui.selectable_value(
+                                            method,
+                                            LowCodeStringProcessMethod::UrlEncode,
+                                            "urlEncode",
+                                        );
+                                    });
+                            });
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::SplitString {
+                            input,
+                            separator,
+                            output,
+                        } => {
+                            ui.label("Input text or $variable:");
+                            ui.text_edit_singleline(input);
+                            ui.label("Separator (supports escapes like \\r\\n):");
+                            ui.text_edit_singleline(separator);
+                            ui.label("Output array variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::Assign { expression, output } => {
+                            ui.label("Expression or source value:");
+                            ui.text_edit_singleline(expression);
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::StrReplace {
+                            input,
+                            pattern,
+                            replacement,
+                            use_regex,
+                            output,
+                        } => {
+                            ui.label("Input text or $variable:");
+                            ui.text_edit_singleline(input);
+                            ui.label("Pattern / old text:");
+                            ui.text_edit_singleline(pattern);
+                            ui.label("Replacement:");
+                            ui.text_edit_singleline(replacement);
+                            ui.checkbox(use_regex, "Use regex");
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::FormatString {
+                            template,
+                            p0,
+                            p1,
+                            p2,
+                            p3,
+                            p4,
+                            output,
+                        } => {
+                            ui.label("Template:");
+                            ui.text_edit_singleline(template);
+                            for (label, value) in
+                                [("P0", p0), ("P1", p1), ("P2", p2), ("P3", p3), ("P4", p4)]
+                            {
+                                ui.label(format!("{label} value or $variable:"));
+                                ui.text_edit_singleline(value);
+                            }
+                            ui.label("Output variable:");
+                            ui.text_edit_singleline(output);
+                        }
+                        LowCodePluginStep::Notify { message } => {
+                            ui.label("Message:");
+                            ui.text_edit_singleline(message);
+                        }
+                        LowCodePluginStep::OutputText {
+                            content,
+                            append_return,
+                        } => {
+                            ui.label("Content or $variable:");
+                            ui.text_edit_singleline(content);
+                            ui.checkbox(append_return, "Append Return");
+                        }
                     }
-                    LowCodePluginStep::Notify { message } => {
-                        ui.label("Message:");
-                        ui.text_edit_singleline(message);
-                    }
-                    LowCodePluginStep::OutputText {
-                        content,
-                        append_return,
-                    } => {
-                        ui.label("Content or $variable:");
-                        ui.text_edit_singleline(content);
-                        ui.checkbox(append_return, "Append Return");
-                    }
-                }
                 });
         });
 
@@ -1494,12 +1511,14 @@ impl QuickerApp {
                 let mut move_request = None;
                 let drop_frame = egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        ui.visuals().widgets.inactive.bg_stroke.color,
+                    ));
 
                 if self.plugin_draft.steps.is_empty() {
                     ui.label(
-                        egui::RichText::new("No steps yet. Add one from the left palette.")
-                            .weak(),
+                        egui::RichText::new("No steps yet. Add one from the left palette.").weak(),
                     );
                 } else {
                     for insert_idx in 0..=self.plugin_draft.steps.len() {
@@ -1640,9 +1659,11 @@ impl QuickerApp {
                                 });
 
                             if ui.button("Add Step").clicked() {
-                                self.plugin_draft.key_macro_steps.push(Self::make_key_macro_step(
-                                    self.plugin_new_key_macro_step_idx,
-                                ));
+                                self.plugin_draft
+                                    .key_macro_steps
+                                    .push(Self::make_key_macro_step(
+                                        self.plugin_new_key_macro_step_idx,
+                                    ));
                             }
                         });
 
@@ -1669,7 +1690,9 @@ impl QuickerApp {
                                     ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
                                         ui.horizontal_wrapped(|ui| {
                                             ui.label(
-                                                egui::RichText::new("Drop step here").weak().small(),
+                                                egui::RichText::new("Drop step here")
+                                                    .weak()
+                                                    .small(),
                                             );
                                         });
                                     });
@@ -2573,15 +2596,19 @@ impl QuickerApp {
                                     .size(14.0),
                             );
                         });
-            });
+                });
             ctx.request_repaint();
         }
     }
 
-    fn render_running_action(&self, ctx: &egui::Context) {
-        let Some(action_name) = &self.pending_action_name else {
+    fn render_running_action(&mut self, ctx: &egui::Context) {
+        let Some(action_name) = self.pending_action_name.clone() else {
             return;
         };
+        let is_cancelling = self
+            .action_control
+            .as_ref()
+            .is_some_and(ActionExecutionControl::is_cancelled);
 
         egui::Area::new(egui::Id::new("running_action"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -20.0))
@@ -2594,10 +2621,19 @@ impl QuickerApp {
                         ui.horizontal(|ui| {
                             ui.spinner();
                             ui.label(
-                                egui::RichText::new(format!("Running {action_name}"))
-                                    .color(egui::Color32::WHITE)
-                                    .size(14.0),
+                                egui::RichText::new(if is_cancelling {
+                                    format!("Cancelling {action_name}")
+                                } else {
+                                    format!("Running {action_name}")
+                                })
+                                .color(egui::Color32::WHITE)
+                                .size(14.0),
                             );
+                            let button =
+                                ui.add_enabled(!is_cancelling, egui::Button::new("Cancel"));
+                            if button.clicked() {
+                                self.request_cancel_running_action(ctx);
+                            }
                         });
                     });
             });
@@ -2636,6 +2672,7 @@ impl QuickerApp {
 
         match rx.try_recv() {
             Ok(message) => {
+                self.action_control = None;
                 self.pending_action_name = None;
                 self.action_result_rx = None;
                 self.handle_exec_result(&message.action_name, message.result);
@@ -2645,6 +2682,7 @@ impl QuickerApp {
                     .pending_action_name
                     .take()
                     .unwrap_or_else(|| "Action".into());
+                self.action_control = None;
                 self.action_result_rx = None;
                 self.show_toast(format!("{action_name} stopped unexpectedly"), true);
             }
@@ -2714,7 +2752,9 @@ impl eframe::App for QuickerApp {
 
         // Handle Escape key
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.radial_menu.is_some() {
+            if self.pending_action_name.is_some() {
+                self.request_cancel_running_action(ctx);
+            } else if self.radial_menu.is_some() {
                 self.cancel_radial_menu(ctx);
                 ctx.request_repaint();
             } else if self.view != View::Panel {
