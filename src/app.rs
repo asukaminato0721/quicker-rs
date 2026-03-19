@@ -90,6 +90,13 @@ struct StepDragPayload {
     from: usize,
 }
 
+#[derive(Default)]
+struct StepCardAction {
+    remove: bool,
+    move_up: bool,
+    move_down: bool,
+}
+
 enum PluginEditorMode {
     LowCode,
     RawJson { reason: String },
@@ -687,10 +694,21 @@ impl QuickerApp {
         }
     }
 
-    fn plugin_step_kind_labels() -> [&'static str; 13] {
-        [
+    fn plugin_step_kind_labels() -> &'static [&'static str] {
+        &[
             "Open URL",
             "Delay",
+            "If",
+            "State Read",
+            "State Write",
+            "Message Box",
+            "Select Folder",
+            "User Input",
+            "Download File",
+            "Read File",
+            "Image Info",
+            "Image To Base64",
+            "Delete File",
             "Key Input",
             "Get Clipboard",
             "Write Clipboard",
@@ -732,46 +750,100 @@ impl QuickerApp {
                 url: "https://example.com".into(),
             },
             1 => LowCodePluginStep::Delay { delay_ms: 100 },
-            2 => LowCodePluginStep::KeyInput {
+            2 => LowCodePluginStep::SimpleIf {
+                condition: "$is_true".into(),
+                if_steps: vec![LowCodePluginStep::Notify {
+                    message: "If branch".into(),
+                }],
+                else_steps: Vec::new(),
+            },
+            3 => LowCodePluginStep::StateStorageRead {
+                key: "path".into(),
+                default_value: String::new(),
+                output_value: "path".into(),
+                output_is_empty: "is_path_empty".into(),
+            },
+            4 => LowCodePluginStep::StateStorageWrite {
+                key: "path".into(),
+                value: "$path".into(),
+            },
+            5 => LowCodePluginStep::MsgBox {
+                title: "Notice".into(),
+                message: "Hello".into(),
+            },
+            6 => LowCodePluginStep::SelectFolder {
+                prompt: "Select a folder".into(),
+                output: "path".into(),
+            },
+            7 => LowCodePluginStep::UserInput {
+                prompt: "Enter text".into(),
+                default_value: String::new(),
+                multiline: true,
+                output: "text".into(),
+            },
+            8 => LowCodePluginStep::DownloadFile {
+                url: "https://example.com/file.png".into(),
+                save_path: "$path".into(),
+                save_name: "file.png".into(),
+                output_success: "ok".into(),
+            },
+            9 => LowCodePluginStep::ReadFileImage {
+                path: "$path\\file.png".into(),
+                output: "img".into(),
+            },
+            10 => LowCodePluginStep::ImageInfo {
+                source: "$img".into(),
+                width_output: "width".into(),
+                height_output: "height".into(),
+            },
+            11 => LowCodePluginStep::ImageToBase64 {
+                source: "$img".into(),
+                output: "base64".into(),
+            },
+            12 => LowCodePluginStep::FileDelete {
+                path: "$path\\file.png".into(),
+                disabled: false,
+            },
+            13 => LowCodePluginStep::KeyInput {
                 modifiers: "ctrl".into(),
                 key: "V".into(),
             },
-            3 => LowCodePluginStep::GetClipboard {
+            14 => LowCodePluginStep::GetClipboard {
                 format: LowCodeClipboardFormat::Text,
                 output: "text".into(),
             },
-            4 => LowCodePluginStep::WriteClipboard {
+            15 => LowCodePluginStep::WriteClipboard {
                 clipboard_type: LowCodeWriteClipboardKind::Auto,
                 source: "$text".into(),
                 alt_text: String::new(),
             },
-            5 => LowCodePluginStep::RegexExtract {
+            16 => LowCodePluginStep::RegexExtract {
                 input: "$text".into(),
                 pattern: String::new(),
                 output: "match".into(),
             },
-            6 => LowCodePluginStep::StringProcess {
+            17 => LowCodePluginStep::StringProcess {
                 input: "$text".into(),
                 method: LowCodeStringProcessMethod::ToLower,
                 output: "output".into(),
             },
-            7 => LowCodePluginStep::SplitString {
+            18 => LowCodePluginStep::SplitString {
                 input: "$text".into(),
                 separator: "\\r\\n".into(),
                 output: "parts".into(),
             },
-            8 => LowCodePluginStep::Assign {
+            19 => LowCodePluginStep::Assign {
                 expression: "$={parts}[0]".into(),
                 output: "first_part".into(),
             },
-            9 => LowCodePluginStep::StrReplace {
+            20 => LowCodePluginStep::StrReplace {
                 input: "$text".into(),
                 pattern: String::new(),
                 replacement: String::new(),
                 use_regex: true,
                 output: "output".into(),
             },
-            10 => LowCodePluginStep::FormatString {
+            21 => LowCodePluginStep::FormatString {
                 template: "{0}".into(),
                 p0: "$text".into(),
                 p1: String::new(),
@@ -780,10 +852,10 @@ impl QuickerApp {
                 p4: String::new(),
                 output: "output".into(),
             },
-            11 => LowCodePluginStep::Notify {
+            22 => LowCodePluginStep::Notify {
                 message: "Done".into(),
             },
-            12 => LowCodePluginStep::OutputText {
+            23 => LowCodePluginStep::OutputText {
                 content: "$text".into(),
                 append_return: false,
             },
@@ -841,12 +913,59 @@ impl QuickerApp {
         remove
     }
 
-    fn render_plugin_step_card(ui: &mut egui::Ui, index: usize, step: &mut LowCodePluginStep) -> bool {
-        let mut remove = false;
+    fn render_nested_plugin_step_list(
+        ui: &mut egui::Ui,
+        id_scope: &str,
+        steps: &mut Vec<LowCodePluginStep>,
+    ) {
+        let mut remove_idx = None;
+        let mut move_up_idx = None;
+        let mut move_down_idx = None;
 
-        egui::Frame::group(ui.style())
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
+        for idx in 0..steps.len() {
+            let action = Self::render_plugin_step_card(
+                ui,
+                &format!("{id_scope}_{idx}"),
+                idx,
+                &mut steps[idx],
+                true,
+            );
+            if action.remove {
+                remove_idx = Some(idx);
+            } else if action.move_up {
+                move_up_idx = Some(idx);
+            } else if action.move_down {
+                move_down_idx = Some(idx);
+            }
+            ui.add_space(4.0);
+        }
+
+        if let Some(idx) = remove_idx {
+            steps.remove(idx);
+        } else if let Some(idx) = move_up_idx {
+            if idx > 0 {
+                steps.swap(idx, idx - 1);
+            }
+        } else if let Some(idx) = move_down_idx {
+            if idx + 1 < steps.len() {
+                steps.swap(idx, idx + 1);
+            }
+        }
+    }
+
+    fn render_plugin_step_card(
+        ui: &mut egui::Ui,
+        id_scope: &str,
+        index: usize,
+        step: &mut LowCodePluginStep,
+        show_reorder_buttons: bool,
+    ) -> StepCardAction {
+        let mut action = StepCardAction::default();
+
+        ui.push_id(id_scope, |ui| {
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
                     ui.label(
@@ -857,7 +976,15 @@ impl QuickerApp {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             if ui.small_button("Delete").clicked() {
-                                remove = true;
+                                action.remove = true;
+                            }
+                            if show_reorder_buttons {
+                                if ui.small_button("↓").clicked() {
+                                    action.move_down = true;
+                                }
+                                if ui.small_button("↑").clicked() {
+                                    action.move_up = true;
+                                }
                             }
                         },
                     );
@@ -872,6 +999,123 @@ impl QuickerApp {
                     LowCodePluginStep::Delay { delay_ms } => {
                         ui.label("Delay (ms):");
                         ui.add(egui::DragValue::new(delay_ms).range(0..=60_000).speed(10));
+                    }
+                    LowCodePluginStep::SimpleIf {
+                        condition,
+                        if_steps,
+                        else_steps,
+                    } => {
+                        ui.label("Condition value or $variable:");
+                        ui.text_edit_singleline(condition);
+                        ui.add_space(6.0);
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new("If Branch").strong());
+                            if if_steps.is_empty() {
+                                ui.label(egui::RichText::new("No steps in IF branch.").weak());
+                            } else {
+                                Self::render_nested_plugin_step_list(ui, "if_branch", if_steps);
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.group(|ui| {
+                            ui.label(egui::RichText::new("Else Branch").strong());
+                            if else_steps.is_empty() {
+                                ui.label(egui::RichText::new("No steps in ELSE branch.").weak());
+                            } else {
+                                Self::render_nested_plugin_step_list(ui, "else_branch", else_steps);
+                            }
+                        });
+                    }
+                    LowCodePluginStep::StateStorageRead {
+                        key,
+                        default_value,
+                        output_value,
+                        output_is_empty,
+                    } => {
+                        ui.label("State key:");
+                        ui.text_edit_singleline(key);
+                        ui.label("Default value:");
+                        ui.text_edit_singleline(default_value);
+                        ui.label("Output value variable:");
+                        ui.text_edit_singleline(output_value);
+                        ui.label("Output empty-flag variable:");
+                        ui.text_edit_singleline(output_is_empty);
+                    }
+                    LowCodePluginStep::StateStorageWrite { key, value } => {
+                        ui.label("State key:");
+                        ui.text_edit_singleline(key);
+                        ui.label("Value or $variable:");
+                        ui.text_edit_singleline(value);
+                    }
+                    LowCodePluginStep::MsgBox { title, message } => {
+                        ui.label("Title:");
+                        ui.text_edit_singleline(title);
+                        ui.label("Message:");
+                        ui.text_edit_singleline(message);
+                    }
+                    LowCodePluginStep::SelectFolder { prompt, output } => {
+                        ui.label("Prompt:");
+                        ui.text_edit_singleline(prompt);
+                        ui.label("Output path variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::UserInput {
+                        prompt,
+                        default_value,
+                        multiline,
+                        output,
+                    } => {
+                        ui.label("Prompt:");
+                        ui.text_edit_singleline(prompt);
+                        ui.label("Default value:");
+                        ui.text_edit_singleline(default_value);
+                        ui.checkbox(multiline, "Multiline");
+                        ui.label("Output text variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::DownloadFile {
+                        url,
+                        save_path,
+                        save_name,
+                        output_success,
+                    } => {
+                        ui.label("URL or $variable:");
+                        ui.text_edit_singleline(url);
+                        ui.label("Save folder or $variable:");
+                        ui.text_edit_singleline(save_path);
+                        ui.label("File name:");
+                        ui.text_edit_singleline(save_name);
+                        ui.label("Success flag variable:");
+                        ui.text_edit_singleline(output_success);
+                    }
+                    LowCodePluginStep::ReadFileImage { path, output } => {
+                        ui.label("Image path or expression:");
+                        ui.text_edit_singleline(path);
+                        ui.label("Output image variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::ImageInfo {
+                        source,
+                        width_output,
+                        height_output,
+                    } => {
+                        ui.label("Source image variable:");
+                        ui.text_edit_singleline(source);
+                        ui.label("Width output variable:");
+                        ui.text_edit_singleline(width_output);
+                        ui.label("Height output variable:");
+                        ui.text_edit_singleline(height_output);
+                    }
+                    LowCodePluginStep::ImageToBase64 { source, output } => {
+                        ui.label("Source image variable:");
+                        ui.text_edit_singleline(source);
+                        ui.label("Output base64 variable:");
+                        ui.text_edit_singleline(output);
+                    }
+                    LowCodePluginStep::FileDelete { path, disabled } => {
+                        ui.label("File path or expression:");
+                        ui.text_edit_singleline(path);
+                        ui.checkbox(disabled, "Disabled");
                     }
                     LowCodePluginStep::KeyInput { modifiers, key } => {
                         ui.label("Modifiers (ctrl+shift style):");
@@ -1047,9 +1291,10 @@ impl QuickerApp {
                         ui.checkbox(append_return, "Append Return");
                     }
                 }
-            });
+                });
+        });
 
-        remove
+        action
     }
 
     fn render_plugin_metadata_fields(ui: &mut egui::Ui, draft: &mut LowCodePluginDraft) {
@@ -1072,6 +1317,51 @@ impl QuickerApp {
         let mut names = BTreeSet::new();
         for step in steps {
             match step {
+                LowCodePluginStep::SimpleIf {
+                    if_steps,
+                    else_steps,
+                    ..
+                } => {
+                    names.extend(Self::plugin_flow_variable_names(if_steps));
+                    names.extend(Self::plugin_flow_variable_names(else_steps));
+                }
+                LowCodePluginStep::StateStorageRead {
+                    output_value,
+                    output_is_empty,
+                    ..
+                } => {
+                    for output in [output_value, output_is_empty] {
+                        let trimmed = output.trim();
+                        if !trimmed.is_empty() {
+                            names.insert(trimmed.to_string());
+                        }
+                    }
+                }
+                LowCodePluginStep::SelectFolder { output, .. }
+                | LowCodePluginStep::UserInput { output, .. }
+                | LowCodePluginStep::DownloadFile {
+                    output_success: output,
+                    ..
+                }
+                | LowCodePluginStep::ReadFileImage { output, .. }
+                | LowCodePluginStep::ImageToBase64 { output, .. } => {
+                    let trimmed = output.trim();
+                    if !trimmed.is_empty() {
+                        names.insert(trimmed.to_string());
+                    }
+                }
+                LowCodePluginStep::ImageInfo {
+                    width_output,
+                    height_output,
+                    ..
+                } => {
+                    for output in [width_output, height_output] {
+                        let trimmed = output.trim();
+                        if !trimmed.is_empty() {
+                            names.insert(trimmed.to_string());
+                        }
+                    }
+                }
                 LowCodePluginStep::GetClipboard { output, .. }
                 | LowCodePluginStep::RegexExtract { output, .. }
                 | LowCodePluginStep::StringProcess { output, .. }
@@ -1158,12 +1448,14 @@ impl QuickerApp {
                             |ui| {
                                 Self::render_plugin_step_card(
                                     ui,
+                                    &format!("root_{insert_idx}"),
                                     insert_idx,
                                     &mut self.plugin_draft.steps[insert_idx],
+                                    false,
                                 )
                             },
                         );
-                        if response.inner {
+                        if response.inner.remove {
                             remove_idx = Some(insert_idx);
                         }
                         ui.add_space(4.0);

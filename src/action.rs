@@ -120,6 +120,58 @@ pub enum LowCodeKeyMacroStep {
 pub enum LowCodePluginStep {
     OpenUrl { url: String },
     Delay { delay_ms: u32 },
+    SimpleIf {
+        condition: String,
+        if_steps: Vec<LowCodePluginStep>,
+        else_steps: Vec<LowCodePluginStep>,
+    },
+    StateStorageRead {
+        key: String,
+        default_value: String,
+        output_value: String,
+        output_is_empty: String,
+    },
+    StateStorageWrite {
+        key: String,
+        value: String,
+    },
+    MsgBox {
+        title: String,
+        message: String,
+    },
+    SelectFolder {
+        prompt: String,
+        output: String,
+    },
+    UserInput {
+        prompt: String,
+        default_value: String,
+        multiline: bool,
+        output: String,
+    },
+    DownloadFile {
+        url: String,
+        save_path: String,
+        save_name: String,
+        output_success: String,
+    },
+    ReadFileImage {
+        path: String,
+        output: String,
+    },
+    ImageInfo {
+        source: String,
+        width_output: String,
+        height_output: String,
+    },
+    ImageToBase64 {
+        source: String,
+        output: String,
+    },
+    FileDelete {
+        path: String,
+        disabled: bool,
+    },
     KeyInput { modifiers: String, key: String },
     GetClipboard {
         format: LowCodeClipboardFormat,
@@ -437,130 +489,11 @@ impl LowCodePluginDraft {
                 }
 
                 let data = document.data_payload()?;
-                let mut steps = Vec::with_capacity(data.steps.len());
-
-                for step in &data.steps {
-                    if step.disabled {
-                        continue;
-                    }
-                    if step.if_steps.as_ref().is_some_and(|items| !items.is_empty())
-                        || step.else_steps.as_ref().is_some_and(|items| !items.is_empty())
-                    {
-                        return Err(format!(
-                            "The low-code editor currently supports flat step lists only. Unsupported nested step: {}",
-                            step.step_runner_key
-                        ));
-                    }
-
-                    let draft_step = match step.step_runner_key.as_str() {
-                        "sys:openUrl" => LowCodePluginStep::OpenUrl {
-                            url: binding_string(&step.input_params, "url").unwrap_or_default(),
-                        },
-                        "sys:delay" => LowCodePluginStep::Delay {
-                            delay_ms: binding_string(&step.input_params, "delayMs")
-                                .and_then(|value| value.parse::<u32>().ok())
-                                .unwrap_or(0),
-                        },
-                        "sys:keyInput" => {
-                            let payload: QuickerKeyInput = serde_json::from_str(
-                                &binding_string(&step.input_params, "keys").unwrap_or_default(),
-                            )
-                            .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
-                            LowCodePluginStep::KeyInput {
-                                modifiers: payload
-                                    .ctrl_keys
-                                    .into_iter()
-                                    .filter_map(low_code_modifier_name)
-                                    .collect::<Vec<_>>()
-                                    .join("+"),
-                                key: payload
-                                    .keys
-                                    .first()
-                                    .and_then(|code| low_code_key_name(*code))
-                                    .unwrap_or_default(),
-                            }
-                        }
-                        "sys:getClipboardText" => LowCodePluginStep::GetClipboard {
-                            format: match binding_string(&step.input_params, "format").as_deref() {
-                                Some("Html") => LowCodeClipboardFormat::Html,
-                                _ => LowCodeClipboardFormat::Text,
-                            },
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:writeClipboard" => LowCodePluginStep::WriteClipboard {
-                            clipboard_type: match binding_string(&step.input_params, "type")
-                                .unwrap_or_else(|| "auto".into())
-                                .to_ascii_lowercase()
-                                .as_str()
-                            {
-                                "text" => LowCodeWriteClipboardKind::Text,
-                                "html" => LowCodeWriteClipboardKind::Html,
-                                _ => LowCodeWriteClipboardKind::Auto,
-                            },
-                            source: binding_string(&step.input_params, "html")
-                                .or_else(|| binding_string(&step.input_params, "text"))
-                                .or_else(|| binding_string(&step.input_params, "input"))
-                                .unwrap_or_default(),
-                            alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
-                        },
-                        "sys:regexExtract" => LowCodePluginStep::RegexExtract {
-                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                            pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
-                            output: output_var_name(&step.output_params, "match1")
-                                .or_else(|| output_var_name(&step.output_params, "output"))
-                                .or_else(|| output_var_name(&step.output_params, "matches"))
-                                .unwrap_or_default(),
-                        },
-                        "sys:stringProcess" => LowCodePluginStep::StringProcess {
-                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                            method: match binding_string(&step.input_params, "method").as_deref() {
-                                Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
-                                _ => LowCodeStringProcessMethod::ToLower,
-                            },
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:splitString" => LowCodePluginStep::SplitString {
-                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                            separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:assign" => LowCodePluginStep::Assign {
-                            expression: binding_string(&step.input_params, "input").unwrap_or_default(),
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:strReplace" => LowCodePluginStep::StrReplace {
-                            input: binding_string(&step.input_params, "input").unwrap_or_default(),
-                            pattern: binding_string(&step.input_params, "old").unwrap_or_default(),
-                            replacement: binding_string(&step.input_params, "new").unwrap_or_default(),
-                            use_regex: binding_bool(&step.input_params, "useRegex"),
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:formatString" => LowCodePluginStep::FormatString {
-                            template: binding_string(&step.input_params, "formatString").unwrap_or_default(),
-                            p0: binding_string(&step.input_params, "p0").unwrap_or_default(),
-                            p1: binding_string(&step.input_params, "p1").unwrap_or_default(),
-                            p2: binding_string(&step.input_params, "p2").unwrap_or_default(),
-                            p3: binding_string(&step.input_params, "p3").unwrap_or_default(),
-                            p4: binding_string(&step.input_params, "p4").unwrap_or_default(),
-                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                        },
-                        "sys:notify" => LowCodePluginStep::Notify {
-                            message: binding_string(&step.input_params, "msg").unwrap_or_default(),
-                        },
-                        "sys:outputText" => LowCodePluginStep::OutputText {
-                            content: binding_string(&step.input_params, "content").unwrap_or_default(),
-                            append_return: binding_bool(&step.input_params, "appendReturn"),
-                        },
-                        other => {
-                            return Err(format!(
-                                "The low-code editor does not support step '{}' yet. Use the raw JSON path for that action.",
-                                other
-                            ));
-                        }
-                    };
-
-                    steps.push(draft_step);
-                }
+                let steps = data
+                    .steps
+                    .iter()
+                    .map(low_code_step_from_document)
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Self {
                     kind: LowCodePluginKind::PluginFlow,
@@ -778,6 +711,17 @@ impl LowCodePluginStep {
         match self {
             Self::OpenUrl { .. } => "Open URL",
             Self::Delay { .. } => "Delay",
+            Self::SimpleIf { .. } => "If",
+            Self::StateStorageRead { .. } => "State Read",
+            Self::StateStorageWrite { .. } => "State Write",
+            Self::MsgBox { .. } => "Message Box",
+            Self::SelectFolder { .. } => "Select Folder",
+            Self::UserInput { .. } => "User Input",
+            Self::DownloadFile { .. } => "Download File",
+            Self::ReadFileImage { .. } => "Read File",
+            Self::ImageInfo { .. } => "Image Info",
+            Self::ImageToBase64 { .. } => "Image To Base64",
+            Self::FileDelete { .. } => "Delete File",
             Self::KeyInput { .. } => "Key Input",
             Self::GetClipboard { .. } => "Get Clipboard",
             Self::WriteClipboard { .. } => "Write Clipboard",
@@ -807,6 +751,189 @@ impl LowCodePluginStep {
                 map_with_binding([("delayMs", &delay_ms.to_string())]),
                 Map::new(),
             )),
+            Self::SimpleIf {
+                condition,
+                if_steps,
+                else_steps,
+            } => Ok(QuickerPluginStepDocument {
+                step_runner_key: "sys:simpleIf".into(),
+                input_params: map_with_binding([("condition", condition.as_str())]),
+                output_params: Map::new(),
+                if_steps: Some(
+                    if_steps
+                        .iter()
+                        .map(|step| step.to_step_document(variable_names))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                else_steps: (!else_steps.is_empty()).then(|| {
+                    else_steps
+                        .iter()
+                        .map(|step| step.to_step_document(variable_names))
+                        .collect::<Result<Vec<_>, _>>()
+                }).transpose()?,
+                note: None,
+                disabled: false,
+                collapsed: false,
+                delay_ms: 0,
+            }),
+            Self::StateStorageRead {
+                key,
+                default_value,
+                output_value,
+                output_is_empty,
+            } => {
+                track_variable_name(variable_names, output_value);
+                track_variable_name(variable_names, output_is_empty);
+                Ok(step_document(
+                    "sys:stateStorage",
+                    map_with_binding([
+                        ("type", "readActionState"),
+                        ("key", key.as_str()),
+                        ("defaultValue", default_value.as_str()),
+                        ("inputIfEmpty", "0"),
+                        ("prompt", ""),
+                    ]),
+                    map_with_output([
+                        ("isSuccess", ""),
+                        ("value", output_value.as_str()),
+                        ("isEmpty", output_is_empty.as_str()),
+                    ]),
+                ))
+            }
+            Self::StateStorageWrite { key, value } => Ok(step_document(
+                "sys:stateStorage",
+                map_with_binding([
+                    ("type", "saveActionState"),
+                    ("key", key.as_str()),
+                    ("value", value.as_str()),
+                ]),
+                Map::new(),
+            )),
+            Self::MsgBox { title, message } => Ok(step_document(
+                "sys:MsgBox",
+                map_with_binding([
+                    ("message", message.as_str()),
+                    ("title", title.as_str()),
+                    ("icon", "Asterisk"),
+                    ("buttons", "OK"),
+                ]),
+                Map::new(),
+            )),
+            Self::SelectFolder { prompt, output } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:selectFolder",
+                    map_with_binding([
+                        ("prompt", prompt.as_str()),
+                        ("initDir", ""),
+                        ("showOpenedDirs", "1"),
+                        ("stopIfFail", "1"),
+                    ]),
+                    map_with_output([("isSuccess", ""), ("path", output.as_str())]),
+                ))
+            }
+            Self::UserInput {
+                prompt,
+                default_value,
+                multiline,
+                output,
+            } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:userInput",
+                    map_with_binding([
+                        ("type", if *multiline { "multiline" } else { "text" }),
+                        ("prompt", prompt.as_str()),
+                        ("defaultValue", default_value.as_str()),
+                        ("texttools", ""),
+                        ("pattern", ""),
+                        ("helpLink", ""),
+                        ("isRequired", "0"),
+                        ("fontfamily", ""),
+                        ("winLocation", "CenterScreen"),
+                        ("imeState", "NO_CONTROL"),
+                        ("submitWithReturn", "0"),
+                        ("restoreFocus", "1"),
+                        ("closeOnDeactivated", "0"),
+                        ("stopIfFail", "1"),
+                    ]),
+                    map_with_output([("isSuccess", ""), ("textValue", output.as_str()), ("isEmpty", "")]),
+                ))
+            }
+            Self::DownloadFile {
+                url,
+                save_path,
+                save_name,
+                output_success,
+            } => {
+                track_variable_name(variable_names, output_success);
+                Ok(step_document(
+                    "sys:download",
+                    map_with_binding([
+                        ("url", url.as_str()),
+                        ("savePath", save_path.as_str()),
+                        ("saveName", save_name.as_str()),
+                        ("ua", ""),
+                        ("header", ""),
+                        ("cookie", ""),
+                        ("showProgress", "0"),
+                        ("stopIfFail", "1"),
+                    ]),
+                    map_with_output([("isSuccess", output_success.as_str()), ("savedPath", "")]),
+                ))
+            }
+            Self::ReadFileImage { path, output } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:readFile",
+                    map_with_binding([
+                        ("path", path.as_str()),
+                        ("type", "image"),
+                        ("stopIfFail", "1"),
+                    ]),
+                    map_with_output([("image", output.as_str()), ("isSuccess", "")]),
+                ))
+            }
+            Self::ImageInfo {
+                source,
+                width_output,
+                height_output,
+            } => {
+                track_variable_name(variable_names, width_output);
+                track_variable_name(variable_names, height_output);
+                Ok(step_document(
+                    "sys:imageinfo",
+                    map_with_binding([("sourceType", "var"), ("bmpVar", source.as_str())]),
+                    map_with_output([
+                        ("width", width_output.as_str()),
+                        ("height", height_output.as_str()),
+                        ("dateTimeOriginal", ""),
+                        ("exifData", ""),
+                        ("rawExifData", ""),
+                    ]),
+                ))
+            }
+            Self::ImageToBase64 { source, output } => {
+                track_variable_name(variable_names, output);
+                Ok(step_document(
+                    "sys:imgToBase64",
+                    map_with_binding([("type", "imgToBase64"), ("img", source.as_str())]),
+                    map_with_output([("code", output.as_str())]),
+                ))
+            }
+            Self::FileDelete { path, disabled } => {
+                let mut document = step_document(
+                    "sys:fileOperation",
+                    map_with_binding([
+                        ("type", "deleteFile"),
+                        ("path", path.as_str()),
+                        ("stopIfFail", "1"),
+                    ]),
+                    map_with_output([("isSuccess", "")]),
+                );
+                document.disabled = *disabled;
+                Ok(document)
+            }
             Self::KeyInput { modifiers, key } => Ok(step_document(
                 "sys:keyInput",
                 map_with_binding([(
@@ -1319,6 +1446,200 @@ fn binding_bool(params: &Map<String, Value>, key: &str) -> bool {
         return false;
     };
     binding.value.as_ref().map(|value| truthy(Some(value))).unwrap_or(false)
+}
+
+fn low_code_step_from_document(step: &QuickerPluginStepDocument) -> Result<LowCodePluginStep, String> {
+    match step.step_runner_key.as_str() {
+        "sys:openUrl" => Ok(LowCodePluginStep::OpenUrl {
+            url: binding_string(&step.input_params, "url").unwrap_or_default(),
+        }),
+        "sys:delay" => Ok(LowCodePluginStep::Delay {
+            delay_ms: binding_string(&step.input_params, "delayMs")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0),
+        }),
+        "sys:simpleIf" => Ok(LowCodePluginStep::SimpleIf {
+            condition: binding_string(&step.input_params, "condition").unwrap_or_default(),
+            if_steps: step
+                .if_steps
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(low_code_step_from_document)
+                .collect::<Result<Vec<_>, _>>()?,
+            else_steps: step
+                .else_steps
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(low_code_step_from_document)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        "sys:stateStorage" => match binding_string(&step.input_params, "type").as_deref() {
+            Some("readActionState") => Ok(LowCodePluginStep::StateStorageRead {
+                key: binding_string(&step.input_params, "key").unwrap_or_default(),
+                default_value: binding_string(&step.input_params, "defaultValue")
+                    .unwrap_or_default(),
+                output_value: output_var_name(&step.output_params, "value").unwrap_or_default(),
+                output_is_empty: output_var_name(&step.output_params, "isEmpty")
+                    .unwrap_or_default(),
+            }),
+            Some("saveActionState") => Ok(LowCodePluginStep::StateStorageWrite {
+                key: binding_string(&step.input_params, "key").unwrap_or_default(),
+                value: binding_string(&step.input_params, "value").unwrap_or_default(),
+            }),
+            other => Err(format!(
+                "The low-code editor does not support stateStorage type {:?} yet.",
+                other
+            )),
+        },
+        "sys:MsgBox" => Ok(LowCodePluginStep::MsgBox {
+            title: binding_string(&step.input_params, "title").unwrap_or_default(),
+            message: binding_string(&step.input_params, "message").unwrap_or_default(),
+        }),
+        "sys:selectFolder" => Ok(LowCodePluginStep::SelectFolder {
+            prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "path").unwrap_or_default(),
+        }),
+        "sys:userInput" => Ok(LowCodePluginStep::UserInput {
+            prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
+            default_value: binding_string(&step.input_params, "defaultValue").unwrap_or_default(),
+            multiline: matches!(
+                binding_string(&step.input_params, "type").as_deref(),
+                Some("multiline")
+            ),
+            output: output_var_name(&step.output_params, "textValue").unwrap_or_default(),
+        }),
+        "sys:download" => Ok(LowCodePluginStep::DownloadFile {
+            url: binding_string(&step.input_params, "url").unwrap_or_default(),
+            save_path: binding_string(&step.input_params, "savePath").unwrap_or_default(),
+            save_name: binding_string(&step.input_params, "saveName").unwrap_or_default(),
+            output_success: output_var_name(&step.output_params, "isSuccess").unwrap_or_default(),
+        }),
+        "sys:readFile" => match binding_string(&step.input_params, "type").as_deref() {
+            Some("image") => Ok(LowCodePluginStep::ReadFileImage {
+                path: binding_string(&step.input_params, "path").unwrap_or_default(),
+                output: output_var_name(&step.output_params, "image").unwrap_or_default(),
+            }),
+            other => Err(format!(
+                "The low-code editor does not support readFile type {:?} yet.",
+                other
+            )),
+        },
+        "sys:imageinfo" => Ok(LowCodePluginStep::ImageInfo {
+            source: binding_string(&step.input_params, "bmpVar").unwrap_or_default(),
+            width_output: output_var_name(&step.output_params, "width").unwrap_or_default(),
+            height_output: output_var_name(&step.output_params, "height").unwrap_or_default(),
+        }),
+        "sys:imgToBase64" => Ok(LowCodePluginStep::ImageToBase64 {
+            source: binding_string(&step.input_params, "img").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "code").unwrap_or_default(),
+        }),
+        "sys:fileOperation" => match binding_string(&step.input_params, "type").as_deref() {
+            Some("deleteFile") => Ok(LowCodePluginStep::FileDelete {
+                path: binding_string(&step.input_params, "path").unwrap_or_default(),
+                disabled: step.disabled,
+            }),
+            other => Err(format!(
+                "The low-code editor does not support fileOperation type {:?} yet.",
+                other
+            )),
+        },
+        "sys:keyInput" => {
+            let payload: QuickerKeyInput = serde_json::from_str(
+                &binding_string(&step.input_params, "keys").unwrap_or_default(),
+            )
+            .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
+            Ok(LowCodePluginStep::KeyInput {
+                modifiers: payload
+                    .ctrl_keys
+                    .into_iter()
+                    .filter_map(low_code_modifier_name)
+                    .collect::<Vec<_>>()
+                    .join("+"),
+                key: payload
+                    .keys
+                    .first()
+                    .and_then(|code| low_code_key_name(*code))
+                    .unwrap_or_default(),
+            })
+        }
+        "sys:getClipboardText" => Ok(LowCodePluginStep::GetClipboard {
+            format: match binding_string(&step.input_params, "format").as_deref() {
+                Some("Html") => LowCodeClipboardFormat::Html,
+                _ => LowCodeClipboardFormat::Text,
+            },
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:writeClipboard" => Ok(LowCodePluginStep::WriteClipboard {
+            clipboard_type: match binding_string(&step.input_params, "type")
+                .unwrap_or_else(|| "auto".into())
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "text" => LowCodeWriteClipboardKind::Text,
+                "html" => LowCodeWriteClipboardKind::Html,
+                _ => LowCodeWriteClipboardKind::Auto,
+            },
+            source: binding_string(&step.input_params, "html")
+                .or_else(|| binding_string(&step.input_params, "text"))
+                .or_else(|| binding_string(&step.input_params, "input"))
+                .unwrap_or_default(),
+            alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
+        }),
+        "sys:regexExtract" => Ok(LowCodePluginStep::RegexExtract {
+            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+            pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "match1")
+                .or_else(|| output_var_name(&step.output_params, "output"))
+                .or_else(|| output_var_name(&step.output_params, "matches"))
+                .unwrap_or_default(),
+        }),
+        "sys:stringProcess" => Ok(LowCodePluginStep::StringProcess {
+            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+            method: match binding_string(&step.input_params, "method").as_deref() {
+                Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
+                _ => LowCodeStringProcessMethod::ToLower,
+            },
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:splitString" => Ok(LowCodePluginStep::SplitString {
+            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+            separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:assign" => Ok(LowCodePluginStep::Assign {
+            expression: binding_string(&step.input_params, "input").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:strReplace" => Ok(LowCodePluginStep::StrReplace {
+            input: binding_string(&step.input_params, "input").unwrap_or_default(),
+            pattern: binding_string(&step.input_params, "old").unwrap_or_default(),
+            replacement: binding_string(&step.input_params, "new").unwrap_or_default(),
+            use_regex: binding_bool(&step.input_params, "useRegex"),
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:formatString" => Ok(LowCodePluginStep::FormatString {
+            template: binding_string(&step.input_params, "formatString").unwrap_or_default(),
+            p0: binding_string(&step.input_params, "p0").unwrap_or_default(),
+            p1: binding_string(&step.input_params, "p1").unwrap_or_default(),
+            p2: binding_string(&step.input_params, "p2").unwrap_or_default(),
+            p3: binding_string(&step.input_params, "p3").unwrap_or_default(),
+            p4: binding_string(&step.input_params, "p4").unwrap_or_default(),
+            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+        }),
+        "sys:notify" => Ok(LowCodePluginStep::Notify {
+            message: binding_string(&step.input_params, "msg").unwrap_or_default(),
+        }),
+        "sys:outputText" => Ok(LowCodePluginStep::OutputText {
+            content: binding_string(&step.input_params, "content").unwrap_or_default(),
+            append_return: binding_bool(&step.input_params, "appendReturn"),
+        }),
+        other => Err(format!(
+            "The low-code editor does not support step '{}' yet. Use the raw JSON path for that action.",
+            other
+        )),
+    }
 }
 
 fn track_variable_name(variable_names: &mut BTreeSet<String>, name: &str) {
@@ -2923,6 +3244,29 @@ mod tests {
             draft.launch_path,
             "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ScreenToGif.lnk"
         );
+    }
+
+    #[test]
+    fn low_code_draft_imports_formula_to_image_json() {
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(
+            &sample("sample/公式转图片_20260319_105519.json"),
+        )
+        .expect("formula sample should import");
+
+        assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
+        assert_eq!(draft.title, "公式转图片");
+        assert!(matches!(
+            draft.steps.first(),
+            Some(LowCodePluginStep::StateStorageRead { .. })
+        ));
+        assert!(draft
+            .steps
+            .iter()
+            .any(|step| matches!(step, LowCodePluginStep::SimpleIf { .. })));
+        assert!(draft
+            .steps
+            .iter()
+            .any(|step| matches!(step, LowCodePluginStep::ImageToBase64 { .. })));
     }
 
     #[test]
