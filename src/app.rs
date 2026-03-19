@@ -1,6 +1,7 @@
 use crate::action::{
     Action, ActionKind, ExecResult, LowCodeClipboardFormat, LowCodePluginDraft,
-    LowCodePluginStep, LowCodeStringProcessMethod, LowCodeWriteClipboardKind,
+    LowCodePluginKind, LowCodePluginStep, LowCodeStringProcessMethod,
+    LowCodeWriteClipboardKind,
 };
 use crate::config::Config;
 use crate::focus::{self, FocusTracker};
@@ -964,7 +965,35 @@ impl QuickerApp {
     }
 
     fn render_plugin_json_editor(&mut self, ui: &mut egui::Ui) {
-        ui.label("Plugin Title:");
+        ui.horizontal(|ui| {
+            ui.label("Quicker Type:");
+            egui::ComboBox::from_id_salt("quicker_doc_kind")
+                .selected_text(match self.plugin_draft.kind {
+                    LowCodePluginKind::KeyMacro => "ActionType 7: Key Macro",
+                    LowCodePluginKind::OpenApp => "ActionType 11: Open App/File",
+                    LowCodePluginKind::PluginFlow => "ActionType 24: Plugin Flow",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.plugin_draft.kind,
+                        LowCodePluginKind::KeyMacro,
+                        "ActionType 7: Key Macro",
+                    );
+                    ui.selectable_value(
+                        &mut self.plugin_draft.kind,
+                        LowCodePluginKind::OpenApp,
+                        "ActionType 11: Open App/File",
+                    );
+                    ui.selectable_value(
+                        &mut self.plugin_draft.kind,
+                        LowCodePluginKind::PluginFlow,
+                        "ActionType 24: Plugin Flow",
+                    );
+                });
+        });
+        ui.add_space(6.0);
+
+        ui.label("Title:");
         ui.text_edit_singleline(&mut self.plugin_draft.title);
         ui.label("Description:");
         ui.text_edit_singleline(&mut self.plugin_draft.description);
@@ -979,83 +1008,123 @@ impl QuickerApp {
         }
 
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("Low-code steps").strong());
-        ui.label(
-            egui::RichText::new(
-                "Use $var to read a previous step output. Drag cards to reorder them. The builder currently targets the flat ActionType 24 step set supported by quicker-rs.",
-            )
-            .weak()
-            .small(),
-        );
-        ui.add_space(6.0);
+        match self.plugin_draft.kind {
+            LowCodePluginKind::KeyMacro => {
+                ui.label(egui::RichText::new("Key Macro").strong());
+                ui.label(
+                    egui::RichText::new(
+                        "填写 Quicker 的宏脚本内容，例如 `@MENU+VK_C`、`;300`、`%text` 这样的行。",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.plugin_draft.key_macro_script)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(8)
+                        .code_editor(),
+                );
+            }
+            LowCodePluginKind::OpenApp => {
+                ui.label(egui::RichText::new("Open App / File").strong());
+                ui.label("Target path:");
+                ui.text_edit_singleline(&mut self.plugin_draft.launch_path);
+                ui.label("Arguments:");
+                ui.text_edit_singleline(&mut self.plugin_draft.launch_arguments);
+                ui.checkbox(
+                    &mut self.plugin_draft.launch_set_working_dir,
+                    "Use target folder as working directory",
+                );
+            }
+            LowCodePluginKind::PluginFlow => {
+                ui.label(egui::RichText::new("Low-code steps").strong());
+                ui.label(
+                    egui::RichText::new(
+                        "Use $var to read a previous step output. Drag cards to reorder them. The builder currently targets the flat ActionType 24 step set supported by quicker-rs.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.add_space(6.0);
 
-        let labels = Self::plugin_step_kind_labels();
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("plugin_new_step_kind")
-                .selected_text(labels[self.plugin_new_step_idx])
-                .show_ui(ui, |ui| {
-                    for (idx, label) in labels.iter().enumerate() {
-                        ui.selectable_value(&mut self.plugin_new_step_idx, idx, *label);
+                let labels = Self::plugin_step_kind_labels();
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("plugin_new_step_kind")
+                        .selected_text(labels[self.plugin_new_step_idx])
+                        .show_ui(ui, |ui| {
+                            for (idx, label) in labels.iter().enumerate() {
+                                ui.selectable_value(&mut self.plugin_new_step_idx, idx, *label);
+                            }
+                        });
+
+                    if ui.button("Add Step").clicked() {
+                        self.plugin_draft
+                            .steps
+                            .push(Self::make_plugin_step(self.plugin_new_step_idx));
                     }
                 });
 
-            if ui.button("Add Step").clicked() {
-                self.plugin_draft
-                    .steps
-                    .push(Self::make_plugin_step(self.plugin_new_step_idx));
-            }
-        });
+                ui.add_space(8.0);
+                let mut remove_idx = None;
+                let mut move_request = None;
+                let drop_frame = egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
 
-        ui.add_space(8.0);
-        let mut remove_idx = None;
-        let mut move_request = None;
-        let drop_frame = egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(8, 4))
-            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+                if self.plugin_draft.steps.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No steps yet. Add one from the palette above.").weak(),
+                    );
+                } else {
+                    for insert_idx in 0..=self.plugin_draft.steps.len() {
+                        let (_, dropped) =
+                            ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(egui::RichText::new("Drop step here").weak().small());
+                                });
+                            });
+                        if let Some(payload) = dropped {
+                            move_request = Some((payload.from, insert_idx));
+                        }
 
-        if self.plugin_draft.steps.is_empty() {
-            ui.label(egui::RichText::new("No steps yet. Add one from the palette above.").weak());
-        } else {
-            for insert_idx in 0..=self.plugin_draft.steps.len() {
-                let (_, dropped) = ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("Drop step here").weak().small());
-                    });
-                });
-                if let Some(payload) = dropped {
-                    move_request = Some((payload.from, insert_idx));
+                        if insert_idx == self.plugin_draft.steps.len() {
+                            break;
+                        }
+
+                        let response = ui.dnd_drag_source(
+                            egui::Id::new(("plugin_step", insert_idx)),
+                            StepDragPayload { from: insert_idx },
+                            |ui| {
+                                Self::render_plugin_step_card(
+                                    ui,
+                                    insert_idx,
+                                    &mut self.plugin_draft.steps[insert_idx],
+                                )
+                            },
+                        );
+                        if response.inner {
+                            remove_idx = Some(insert_idx);
+                        }
+                        ui.add_space(4.0);
+                    }
                 }
 
-                if insert_idx == self.plugin_draft.steps.len() {
-                    break;
+                if let Some((from, mut to)) = move_request {
+                    if from < self.plugin_draft.steps.len() {
+                        if from < to {
+                            to -= 1;
+                        }
+                        if from != to && to <= self.plugin_draft.steps.len() {
+                            let step = self.plugin_draft.steps.remove(from);
+                            self.plugin_draft.steps.insert(to, step);
+                        }
+                    }
                 }
-
-                let response = ui.dnd_drag_source(
-                    egui::Id::new(("plugin_step", insert_idx)),
-                    StepDragPayload { from: insert_idx },
-                    |ui| Self::render_plugin_step_card(ui, insert_idx, &mut self.plugin_draft.steps[insert_idx]),
-                );
-                if response.inner {
-                    remove_idx = Some(insert_idx);
+                if let Some(idx) = remove_idx {
+                    if idx < self.plugin_draft.steps.len() {
+                        self.plugin_draft.steps.remove(idx);
+                    }
                 }
-                ui.add_space(4.0);
-            }
-        }
-
-        if let Some((from, mut to)) = move_request {
-            if from < self.plugin_draft.steps.len() {
-                if from < to {
-                    to -= 1;
-                }
-                if from != to && to <= self.plugin_draft.steps.len() {
-                    let step = self.plugin_draft.steps.remove(from);
-                    self.plugin_draft.steps.insert(to, step);
-                }
-            }
-        }
-        if let Some(idx) = remove_idx {
-            if idx < self.plugin_draft.steps.len() {
-                self.plugin_draft.steps.remove(idx);
             }
         }
 
@@ -1065,7 +1134,7 @@ impl QuickerApp {
         ui.label(egui::RichText::new("Raw JSON Import / Export").strong());
         ui.label(
             egui::RichText::new(
-                "Import a supported ActionType 24 plugin into the builder, or export the current draft as native Quicker JSON.",
+                "Import a supported ActionType 7, 11, or 24 document into the builder, or export the current draft as native Quicker JSON.",
             )
             .weak()
             .small(),

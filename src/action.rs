@@ -75,21 +75,38 @@ pub struct PluginPipelineStorage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LowCodePluginDraft {
+    pub kind: LowCodePluginKind,
     pub title: String,
     pub description: String,
     pub icon: Option<String>,
+    pub key_macro_script: String,
+    pub launch_path: String,
+    pub launch_arguments: String,
+    pub launch_set_working_dir: bool,
     pub steps: Vec<LowCodePluginStep>,
 }
 
 impl Default for LowCodePluginDraft {
     fn default() -> Self {
         Self {
+            kind: LowCodePluginKind::PluginFlow,
             title: String::new(),
             description: String::new(),
             icon: None,
+            key_macro_script: String::new(),
+            launch_path: String::new(),
+            launch_arguments: String::new(),
+            launch_set_working_dir: false,
             steps: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowCodePluginKind {
+    KeyMacro,
+    OpenApp,
+    PluginFlow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,234 +392,359 @@ impl LowCodePluginDraft {
         let document: QuickerActionDocument = serde_json::from_str(input)
             .map_err(|err| format!("Failed to parse Quicker plugin JSON: {err}"))?;
 
-        if document.action_type != QUICKER_PLUGIN_ACTION_TYPE {
-            return Err("The low-code editor currently supports ActionType 24 plugin documents only".into());
-        }
-        if document.use_template.unwrap_or(false) && !document.has_data() {
-            return Err(
-                "Template-based Quicker actions cannot be opened in the low-code editor because the template body is not embedded"
-                    .into(),
-            );
-        }
-
-        let data = document.data_payload()?;
-        let mut steps = Vec::with_capacity(data.steps.len());
-
-        for step in &data.steps {
-            if step.disabled {
-                continue;
+        match document.action_type {
+            QUICKER_KEYS_ACTION_TYPE => {
+                let key_macro_script = document.data_text().to_string();
+                Ok(Self {
+                    kind: LowCodePluginKind::KeyMacro,
+                    title: document.title,
+                    description: document.description,
+                    icon: document.icon,
+                    key_macro_script,
+                    launch_path: String::new(),
+                    launch_arguments: String::new(),
+                    launch_set_working_dir: false,
+                    steps: Vec::new(),
+                })
             }
-            if step.if_steps.as_ref().is_some_and(|items| !items.is_empty())
-                || step.else_steps.as_ref().is_some_and(|items| !items.is_empty())
-            {
-                return Err(format!(
-                    "The low-code editor currently supports flat step lists only. Unsupported nested step: {}",
-                    step.step_runner_key
-                ));
+            QUICKER_OPEN_ACTION_TYPE => {
+                let launch = document.launch_payload()?;
+                Ok(Self {
+                    kind: LowCodePluginKind::OpenApp,
+                    title: document.title,
+                    description: document.description,
+                    icon: document.icon,
+                    key_macro_script: String::new(),
+                    launch_path: launch.file_name,
+                    launch_arguments: launch.arguments,
+                    launch_set_working_dir: launch.set_working_dir,
+                    steps: Vec::new(),
+                })
             }
+            QUICKER_PLUGIN_ACTION_TYPE => {
+                if document.use_template.unwrap_or(false) && !document.has_data() {
+                    return Err(
+                        "Template-based Quicker actions cannot be opened in the low-code editor because the template body is not embedded"
+                            .into(),
+                    );
+                }
 
-            let draft_step = match step.step_runner_key.as_str() {
-                "sys:openUrl" => LowCodePluginStep::OpenUrl {
-                    url: binding_string(&step.input_params, "url").unwrap_or_default(),
-                },
-                "sys:delay" => LowCodePluginStep::Delay {
-                    delay_ms: binding_string(&step.input_params, "delayMs")
-                        .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(0),
-                },
-                "sys:keyInput" => {
-                    let payload: QuickerKeyInput = serde_json::from_str(
-                        &binding_string(&step.input_params, "keys").unwrap_or_default(),
-                    )
-                    .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
-                    LowCodePluginStep::KeyInput {
-                        modifiers: payload
-                            .ctrl_keys
-                            .into_iter()
-                            .filter_map(low_code_modifier_name)
-                            .collect::<Vec<_>>()
-                            .join("+"),
-                        key: payload
-                            .keys
-                            .first()
-                            .and_then(|code| low_code_key_name(*code))
-                            .unwrap_or_default(),
+                let data = document.data_payload()?;
+                let mut steps = Vec::with_capacity(data.steps.len());
+
+                for step in &data.steps {
+                    if step.disabled {
+                        continue;
                     }
-                }
-                "sys:getClipboardText" => LowCodePluginStep::GetClipboard {
-                    format: match binding_string(&step.input_params, "format").as_deref() {
-                        Some("Html") => LowCodeClipboardFormat::Html,
-                        _ => LowCodeClipboardFormat::Text,
-                    },
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:writeClipboard" => LowCodePluginStep::WriteClipboard {
-                    clipboard_type: match binding_string(&step.input_params, "type")
-                        .unwrap_or_else(|| "auto".into())
-                        .to_ascii_lowercase()
-                        .as_str()
+                    if step.if_steps.as_ref().is_some_and(|items| !items.is_empty())
+                        || step.else_steps.as_ref().is_some_and(|items| !items.is_empty())
                     {
-                        "text" => LowCodeWriteClipboardKind::Text,
-                        "html" => LowCodeWriteClipboardKind::Html,
-                        _ => LowCodeWriteClipboardKind::Auto,
-                    },
-                    source: binding_string(&step.input_params, "html")
-                        .or_else(|| binding_string(&step.input_params, "text"))
-                        .or_else(|| binding_string(&step.input_params, "input"))
-                        .unwrap_or_default(),
-                    alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
-                },
-                "sys:regexExtract" => LowCodePluginStep::RegexExtract {
-                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                    pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
-                    output: output_var_name(&step.output_params, "match1")
-                        .or_else(|| output_var_name(&step.output_params, "output"))
-                        .or_else(|| output_var_name(&step.output_params, "matches"))
-                        .unwrap_or_default(),
-                },
-                "sys:stringProcess" => LowCodePluginStep::StringProcess {
-                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                    method: match binding_string(&step.input_params, "method").as_deref() {
-                        Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
-                        _ => LowCodeStringProcessMethod::ToLower,
-                    },
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:splitString" => LowCodePluginStep::SplitString {
-                    input: binding_string(&step.input_params, "data").unwrap_or_default(),
-                    separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:assign" => LowCodePluginStep::Assign {
-                    expression: binding_string(&step.input_params, "input").unwrap_or_default(),
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:strReplace" => LowCodePluginStep::StrReplace {
-                    input: binding_string(&step.input_params, "input").unwrap_or_default(),
-                    pattern: binding_string(&step.input_params, "old").unwrap_or_default(),
-                    replacement: binding_string(&step.input_params, "new").unwrap_or_default(),
-                    use_regex: binding_bool(&step.input_params, "useRegex"),
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:formatString" => LowCodePluginStep::FormatString {
-                    template: binding_string(&step.input_params, "formatString").unwrap_or_default(),
-                    p0: binding_string(&step.input_params, "p0").unwrap_or_default(),
-                    p1: binding_string(&step.input_params, "p1").unwrap_or_default(),
-                    p2: binding_string(&step.input_params, "p2").unwrap_or_default(),
-                    p3: binding_string(&step.input_params, "p3").unwrap_or_default(),
-                    p4: binding_string(&step.input_params, "p4").unwrap_or_default(),
-                    output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-                },
-                "sys:notify" => LowCodePluginStep::Notify {
-                    message: binding_string(&step.input_params, "msg").unwrap_or_default(),
-                },
-                "sys:outputText" => LowCodePluginStep::OutputText {
-                    content: binding_string(&step.input_params, "content").unwrap_or_default(),
-                    append_return: binding_bool(&step.input_params, "appendReturn"),
-                },
-                other => {
-                    return Err(format!(
-                        "The low-code editor does not support step '{}' yet. Use the raw JSON path for that action.",
-                        other
-                    ));
+                        return Err(format!(
+                            "The low-code editor currently supports flat step lists only. Unsupported nested step: {}",
+                            step.step_runner_key
+                        ));
+                    }
+
+                    let draft_step = match step.step_runner_key.as_str() {
+                        "sys:openUrl" => LowCodePluginStep::OpenUrl {
+                            url: binding_string(&step.input_params, "url").unwrap_or_default(),
+                        },
+                        "sys:delay" => LowCodePluginStep::Delay {
+                            delay_ms: binding_string(&step.input_params, "delayMs")
+                                .and_then(|value| value.parse::<u32>().ok())
+                                .unwrap_or(0),
+                        },
+                        "sys:keyInput" => {
+                            let payload: QuickerKeyInput = serde_json::from_str(
+                                &binding_string(&step.input_params, "keys").unwrap_or_default(),
+                            )
+                            .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
+                            LowCodePluginStep::KeyInput {
+                                modifiers: payload
+                                    .ctrl_keys
+                                    .into_iter()
+                                    .filter_map(low_code_modifier_name)
+                                    .collect::<Vec<_>>()
+                                    .join("+"),
+                                key: payload
+                                    .keys
+                                    .first()
+                                    .and_then(|code| low_code_key_name(*code))
+                                    .unwrap_or_default(),
+                            }
+                        }
+                        "sys:getClipboardText" => LowCodePluginStep::GetClipboard {
+                            format: match binding_string(&step.input_params, "format").as_deref() {
+                                Some("Html") => LowCodeClipboardFormat::Html,
+                                _ => LowCodeClipboardFormat::Text,
+                            },
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:writeClipboard" => LowCodePluginStep::WriteClipboard {
+                            clipboard_type: match binding_string(&step.input_params, "type")
+                                .unwrap_or_else(|| "auto".into())
+                                .to_ascii_lowercase()
+                                .as_str()
+                            {
+                                "text" => LowCodeWriteClipboardKind::Text,
+                                "html" => LowCodeWriteClipboardKind::Html,
+                                _ => LowCodeWriteClipboardKind::Auto,
+                            },
+                            source: binding_string(&step.input_params, "html")
+                                .or_else(|| binding_string(&step.input_params, "text"))
+                                .or_else(|| binding_string(&step.input_params, "input"))
+                                .unwrap_or_default(),
+                            alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
+                        },
+                        "sys:regexExtract" => LowCodePluginStep::RegexExtract {
+                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                            pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
+                            output: output_var_name(&step.output_params, "match1")
+                                .or_else(|| output_var_name(&step.output_params, "output"))
+                                .or_else(|| output_var_name(&step.output_params, "matches"))
+                                .unwrap_or_default(),
+                        },
+                        "sys:stringProcess" => LowCodePluginStep::StringProcess {
+                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                            method: match binding_string(&step.input_params, "method").as_deref() {
+                                Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
+                                _ => LowCodeStringProcessMethod::ToLower,
+                            },
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:splitString" => LowCodePluginStep::SplitString {
+                            input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                            separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:assign" => LowCodePluginStep::Assign {
+                            expression: binding_string(&step.input_params, "input").unwrap_or_default(),
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:strReplace" => LowCodePluginStep::StrReplace {
+                            input: binding_string(&step.input_params, "input").unwrap_or_default(),
+                            pattern: binding_string(&step.input_params, "old").unwrap_or_default(),
+                            replacement: binding_string(&step.input_params, "new").unwrap_or_default(),
+                            use_regex: binding_bool(&step.input_params, "useRegex"),
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:formatString" => LowCodePluginStep::FormatString {
+                            template: binding_string(&step.input_params, "formatString").unwrap_or_default(),
+                            p0: binding_string(&step.input_params, "p0").unwrap_or_default(),
+                            p1: binding_string(&step.input_params, "p1").unwrap_or_default(),
+                            p2: binding_string(&step.input_params, "p2").unwrap_or_default(),
+                            p3: binding_string(&step.input_params, "p3").unwrap_or_default(),
+                            p4: binding_string(&step.input_params, "p4").unwrap_or_default(),
+                            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+                        },
+                        "sys:notify" => LowCodePluginStep::Notify {
+                            message: binding_string(&step.input_params, "msg").unwrap_or_default(),
+                        },
+                        "sys:outputText" => LowCodePluginStep::OutputText {
+                            content: binding_string(&step.input_params, "content").unwrap_or_default(),
+                            append_return: binding_bool(&step.input_params, "appendReturn"),
+                        },
+                        other => {
+                            return Err(format!(
+                                "The low-code editor does not support step '{}' yet. Use the raw JSON path for that action.",
+                                other
+                            ));
+                        }
+                    };
+
+                    steps.push(draft_step);
                 }
-            };
 
-            steps.push(draft_step);
+                Ok(Self {
+                    kind: LowCodePluginKind::PluginFlow,
+                    title: document.title,
+                    description: document.description,
+                    icon: document.icon,
+                    key_macro_script: String::new(),
+                    launch_path: String::new(),
+                    launch_arguments: String::new(),
+                    launch_set_working_dir: false,
+                    steps,
+                })
+            }
+            action_type => Err(format!(
+                "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+            )),
         }
-
-        Ok(Self {
-            title: document.title,
-            description: document.description,
-            icon: document.icon,
-            steps,
-        })
     }
 
     pub fn to_quicker_json(&self) -> Result<String, String> {
-        let mut variable_names = BTreeSet::new();
-        let steps = self
-            .steps
-            .iter()
-            .map(|step| step.to_step_document(&mut variable_names))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let variables = variable_names
-            .into_iter()
-            .map(|name| QuickerPluginVariable {
-                key: name,
-                value_type: Some(0),
-                default_value: Some(String::new()),
-                save_state: Some(false),
-            })
-            .collect();
-
-        let data = QuickerPluginData {
-            limit_single_instance: false,
-            summary_expression: Some(String::new()),
-            sub_programs: Vec::new(),
-            variables,
-            steps,
-        };
-
-        let document = QuickerActionDocument {
-            row: Some(0),
-            col: Some(0),
-            action_type: QUICKER_PLUGIN_ACTION_TYPE,
-            title: self.title.clone(),
-            description: self.description.clone(),
-            icon: self.icon.clone(),
-            path: None,
-            delay_ms: Some(0),
-            data: Some(
-                serde_json::to_string(&data)
-                    .map_err(|err| format!("Failed to serialize plugin data: {err}"))?,
-            ),
-            data2: Some(String::new()),
-            data3: Some(String::new()),
-            children: None,
-            id: None,
-            template_id: None,
-            template_revision: Some(0),
-            use_template: Some(false),
-            last_edit_time_utc: None,
-            shared_action_id: None,
-            share_time_utc: None,
-            create_time_utc: None,
-            as_sub_program: Some(false),
-            skip_when_stop_running_actions: Some(false),
-            skip_check_update: Some(false),
-            auto_update: Some(false),
-            keep_info_when_update: Some(false),
-            min_quicker_version: Some(String::new()),
-            context_menu_data: Some(String::new()),
-            allow_scroll_trigger: Some(false),
-            enable_evaluate_variable: Some(true),
-            is_text_processor: Some(false),
-            is_image_processor: Some(false),
-            association: Some(QuickerAssociation {
-                match_process: None,
-                is_image_processor: Some(false),
-                return_image_from_first_screen_shot_step: Some(true),
+        let document = match self.kind {
+            LowCodePluginKind::KeyMacro => QuickerActionDocument {
+                row: Some(0),
+                col: Some(0),
+                action_type: QUICKER_KEYS_ACTION_TYPE,
+                title: self.title.clone(),
+                description: self.description.clone(),
+                icon: self.icon.clone(),
+                path: None,
+                delay_ms: Some(0),
+                data: Some(self.key_macro_script.clone()),
+                data2: None,
+                data3: None,
+                children: None,
+                id: None,
+                template_id: None,
+                template_revision: Some(0),
+                use_template: Some(false),
+                last_edit_time_utc: None,
+                shared_action_id: None,
+                share_time_utc: None,
+                create_time_utc: None,
+                as_sub_program: Some(false),
+                skip_when_stop_running_actions: Some(false),
+                skip_check_update: Some(false),
+                auto_update: Some(false),
+                keep_info_when_update: Some(false),
+                min_quicker_version: None,
+                context_menu_data: None,
+                allow_scroll_trigger: Some(false),
+                enable_evaluate_variable: Some(true),
                 is_text_processor: Some(false),
-                return_text_from_get_selected_text_step: Some(true),
-                text_match_expression: Some(String::new()),
-                text_min_length: Some(0),
-                text_max_length: Some(0),
-                is_html_processor: Some(false),
-                is_file_processor: Some(false),
-                file_min_count: Some(0),
-                file_max_count: Some(0),
-                allowed_file_extensions: Some(String::new()),
-                require_all_file_match_ext: Some(false),
-                search_box_placeholder: Some(String::new()),
-                is_window_processor: Some(false),
-                enable_realtime_search: Some(false),
-                browser_context_menu: None,
-                url_pattern: None,
-            }),
-            do_not_close_panel: Some(false),
-            user_limitation: None,
+                is_image_processor: Some(false),
+                association: None,
+                do_not_close_panel: None,
+                user_limitation: None,
+            },
+            LowCodePluginKind::OpenApp => QuickerActionDocument {
+                row: Some(0),
+                col: Some(0),
+                action_type: QUICKER_OPEN_ACTION_TYPE,
+                title: self.title.clone(),
+                description: self.description.clone(),
+                icon: self.icon.clone(),
+                path: None,
+                delay_ms: Some(0),
+                data: Some(format!(
+                    "json:{}",
+                    serde_json::to_string(&QuickerLaunchData {
+                        file_name: self.launch_path.clone(),
+                        arguments: self.launch_arguments.clone(),
+                        run_as_admin: false,
+                        wait_for_exit: false,
+                        window_style: None,
+                        set_working_dir: self.launch_set_working_dir,
+                        alternative_paths: String::new(),
+                    })
+                    .map_err(|err| format!("Failed to serialize launcher payload: {err}"))?
+                )),
+                data2: Some(String::new()),
+                data3: Some(String::new()),
+                children: None,
+                id: None,
+                template_id: None,
+                template_revision: Some(0),
+                use_template: Some(false),
+                last_edit_time_utc: None,
+                shared_action_id: None,
+                share_time_utc: None,
+                create_time_utc: None,
+                as_sub_program: Some(false),
+                skip_when_stop_running_actions: Some(false),
+                skip_check_update: Some(false),
+                auto_update: Some(false),
+                keep_info_when_update: Some(false),
+                min_quicker_version: None,
+                context_menu_data: None,
+                allow_scroll_trigger: Some(false),
+                enable_evaluate_variable: Some(true),
+                is_text_processor: Some(false),
+                is_image_processor: Some(false),
+                association: None,
+                do_not_close_panel: None,
+                user_limitation: None,
+            },
+            LowCodePluginKind::PluginFlow => {
+                let mut variable_names = BTreeSet::new();
+                let steps = self
+                    .steps
+                    .iter()
+                    .map(|step| step.to_step_document(&mut variable_names))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let variables = variable_names
+                    .into_iter()
+                    .map(|name| QuickerPluginVariable {
+                        key: name,
+                        value_type: Some(0),
+                        default_value: Some(String::new()),
+                        save_state: Some(false),
+                    })
+                    .collect();
+
+                let data = QuickerPluginData {
+                    limit_single_instance: false,
+                    summary_expression: Some(String::new()),
+                    sub_programs: Vec::new(),
+                    variables,
+                    steps,
+                };
+
+                QuickerActionDocument {
+                    row: Some(0),
+                    col: Some(0),
+                    action_type: QUICKER_PLUGIN_ACTION_TYPE,
+                    title: self.title.clone(),
+                    description: self.description.clone(),
+                    icon: self.icon.clone(),
+                    path: None,
+                    delay_ms: Some(0),
+                    data: Some(
+                        serde_json::to_string(&data)
+                            .map_err(|err| format!("Failed to serialize plugin data: {err}"))?,
+                    ),
+                    data2: Some(String::new()),
+                    data3: Some(String::new()),
+                    children: None,
+                    id: None,
+                    template_id: None,
+                    template_revision: Some(0),
+                    use_template: Some(false),
+                    last_edit_time_utc: None,
+                    shared_action_id: None,
+                    share_time_utc: None,
+                    create_time_utc: None,
+                    as_sub_program: Some(false),
+                    skip_when_stop_running_actions: Some(false),
+                    skip_check_update: Some(false),
+                    auto_update: Some(false),
+                    keep_info_when_update: Some(false),
+                    min_quicker_version: Some(String::new()),
+                    context_menu_data: Some(String::new()),
+                    allow_scroll_trigger: Some(false),
+                    enable_evaluate_variable: Some(true),
+                    is_text_processor: Some(false),
+                    is_image_processor: Some(false),
+                    association: Some(QuickerAssociation {
+                        match_process: None,
+                        is_image_processor: Some(false),
+                        return_image_from_first_screen_shot_step: Some(true),
+                        is_text_processor: Some(false),
+                        return_text_from_get_selected_text_step: Some(true),
+                        text_match_expression: Some(String::new()),
+                        text_min_length: Some(0),
+                        text_max_length: Some(0),
+                        is_html_processor: Some(false),
+                        is_file_processor: Some(false),
+                        file_min_count: Some(0),
+                        file_max_count: Some(0),
+                        allowed_file_extensions: Some(String::new()),
+                        require_all_file_match_ext: Some(false),
+                        search_box_placeholder: Some(String::new()),
+                        is_window_processor: Some(false),
+                        enable_realtime_search: Some(false),
+                        browser_context_menu: None,
+                        url_pattern: None,
+                    }),
+                    do_not_close_panel: Some(false),
+                    user_limitation: None,
+                }
+            }
         };
 
         serde_json::to_string_pretty(&document)
@@ -2550,6 +2692,7 @@ mod tests {
         .expect("sample should import");
 
         assert_eq!(draft.title, "快捷键");
+        assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.steps.len(), 1);
         assert_eq!(
             draft.steps,
@@ -2565,9 +2708,14 @@ mod tests {
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
         let draft = LowCodePluginDraft {
+            kind: LowCodePluginKind::PluginFlow,
             title: "Docs".into(),
             description: "open docs".into(),
             icon: Some("fa:Light_Keyboard".into()),
+            key_macro_script: String::new(),
+            launch_path: String::new(),
+            launch_arguments: String::new(),
+            launch_set_working_dir: false,
             steps: vec![LowCodePluginStep::OpenUrl {
                 url: "https://example.com/docs".into(),
             }],
@@ -2580,6 +2728,31 @@ mod tests {
         with_action_test_runtime(|runtime| {
             assert_eq!(runtime.opened_targets, vec!["https://example.com/docs"]);
         });
+    }
+
+    #[test]
+    fn low_code_draft_imports_key_macro_json() {
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(
+            &sample("sample/定位_20260319_105649.json"),
+        )
+        .expect("key macro should import");
+
+        assert_eq!(draft.kind, LowCodePluginKind::KeyMacro);
+        assert_eq!(draft.key_macro_script, "@MENU+VK_C");
+    }
+
+    #[test]
+    fn low_code_draft_imports_open_app_json() {
+        let draft = LowCodePluginDraft::from_quicker_plugin_json(
+            &sample("sample/ScreenToGif_20260319_095543.json"),
+        )
+        .expect("launcher should import");
+
+        assert_eq!(draft.kind, LowCodePluginKind::OpenApp);
+        assert_eq!(
+            draft.launch_path,
+            "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\ScreenToGif.lnk"
+        );
     }
 
     #[test]
