@@ -85,16 +85,15 @@ enum View {
     ScriptOutput,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StepDragPayload {
+    scope: String,
     from: usize,
 }
 
 #[derive(Default)]
 struct StepCardAction {
     remove: bool,
-    move_up: bool,
-    move_down: bool,
 }
 
 enum PluginEditorMode {
@@ -918,47 +917,88 @@ impl QuickerApp {
         id_scope: &str,
         steps: &mut Vec<LowCodePluginStep>,
     ) {
-        let mut remove_idx = None;
-        let mut move_up_idx = None;
-        let mut move_down_idx = None;
+        let mut add_step_idx = None;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Branch Steps").weak().small());
+            ui.menu_button("Add Step", |ui| {
+                for (idx, label) in Self::plugin_step_kind_labels().iter().enumerate() {
+                    if ui.button(*label).clicked() {
+                        add_step_idx = Some(idx);
+                        ui.close();
+                    }
+                }
+            });
+        });
+        ui.add_space(4.0);
 
-        for idx in 0..steps.len() {
-            let action = Self::render_plugin_step_card(
+        if let Some(idx) = add_step_idx {
+            steps.push(Self::make_plugin_step(idx));
+        }
+
+        let mut remove_idx = None;
+        let mut move_request = None;
+        let drop_frame = egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color));
+
+        if steps.is_empty() {
+            ui.label(egui::RichText::new("No steps in this branch.").weak());
+            return;
+        }
+
+        for insert_idx in 0..=steps.len() {
+            let (_, dropped) = ui.dnd_drop_zone::<StepDragPayload, _>(drop_frame, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Drop step here").weak().small());
+                });
+            });
+            if let Some(payload) = dropped {
+                if payload.scope == id_scope {
+                    move_request = Some((payload.from, insert_idx));
+                }
+            }
+
+            if insert_idx == steps.len() {
+                break;
+            }
+
+            let response = Self::render_plugin_step_card(
                 ui,
-                &format!("{id_scope}_{idx}"),
-                idx,
-                &mut steps[idx],
-                true,
+                &format!("{id_scope}_{insert_idx}"),
+                Some(id_scope),
+                insert_idx,
+                &mut steps[insert_idx],
+                false,
             );
-            if action.remove {
-                remove_idx = Some(idx);
-            } else if action.move_up {
-                move_up_idx = Some(idx);
-            } else if action.move_down {
-                move_down_idx = Some(idx);
+            if response.remove {
+                remove_idx = Some(insert_idx);
             }
             ui.add_space(4.0);
         }
 
+        if let Some((from, mut to)) = move_request {
+            if from < steps.len() {
+                if from < to {
+                    to -= 1;
+                }
+                if from != to && to <= steps.len() {
+                    let step = steps.remove(from);
+                    steps.insert(to, step);
+                }
+            }
+        }
         if let Some(idx) = remove_idx {
             steps.remove(idx);
-        } else if let Some(idx) = move_up_idx {
-            if idx > 0 {
-                steps.swap(idx, idx - 1);
-            }
-        } else if let Some(idx) = move_down_idx {
-            if idx + 1 < steps.len() {
-                steps.swap(idx, idx + 1);
-            }
         }
     }
 
     fn render_plugin_step_card(
         ui: &mut egui::Ui,
         id_scope: &str,
+        drag_scope: Option<&str>,
         index: usize,
         step: &mut LowCodePluginStep,
-        show_reorder_buttons: bool,
+        _show_reorder_buttons: bool,
     ) -> StepCardAction {
         let mut action = StepCardAction::default();
 
@@ -967,7 +1007,20 @@ impl QuickerApp {
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                    if let Some(scope) = drag_scope {
+                        let _ = ui.dnd_drag_source(
+                            egui::Id::new((scope, index, "handle")),
+                            StepDragPayload {
+                                scope: scope.to_string(),
+                                from: index,
+                            },
+                            |ui| {
+                                ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                            },
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("⋮⋮").size(16.0).weak());
+                    }
                     ui.label(
                         egui::RichText::new(format!("Step {}: {}", index + 1, step.label()))
                             .strong(),
@@ -977,14 +1030,6 @@ impl QuickerApp {
                         |ui| {
                             if ui.small_button("Delete").clicked() {
                                 action.remove = true;
-                            }
-                            if show_reorder_buttons {
-                                if ui.small_button("↓").clicked() {
-                                    action.move_down = true;
-                                }
-                                if ui.small_button("↑").clicked() {
-                                    action.move_up = true;
-                                }
                             }
                         },
                     );
@@ -1010,20 +1055,20 @@ impl QuickerApp {
                         ui.add_space(6.0);
                         ui.group(|ui| {
                             ui.label(egui::RichText::new("If Branch").strong());
-                            if if_steps.is_empty() {
-                                ui.label(egui::RichText::new("No steps in IF branch.").weak());
-                            } else {
-                                Self::render_nested_plugin_step_list(ui, "if_branch", if_steps);
-                            }
+                            Self::render_nested_plugin_step_list(
+                                ui,
+                                &format!("{id_scope}_if"),
+                                if_steps,
+                            );
                         });
                         ui.add_space(6.0);
                         ui.group(|ui| {
                             ui.label(egui::RichText::new("Else Branch").strong());
-                            if else_steps.is_empty() {
-                                ui.label(egui::RichText::new("No steps in ELSE branch.").weak());
-                            } else {
-                                Self::render_nested_plugin_step_list(ui, "else_branch", else_steps);
-                            }
+                            Self::render_nested_plugin_step_list(
+                                ui,
+                                &format!("{id_scope}_else"),
+                                else_steps,
+                            );
                         });
                     }
                     LowCodePluginStep::StateStorageRead {
@@ -1435,27 +1480,24 @@ impl QuickerApp {
                                 });
                             });
                         if let Some(payload) = dropped {
-                            move_request = Some((payload.from, insert_idx));
+                            if payload.scope == "root" {
+                                move_request = Some((payload.from, insert_idx));
+                            }
                         }
 
                         if insert_idx == self.plugin_draft.steps.len() {
                             break;
                         }
 
-                        let response = ui.dnd_drag_source(
-                            egui::Id::new(("plugin_step", insert_idx)),
-                            StepDragPayload { from: insert_idx },
-                            |ui| {
-                                Self::render_plugin_step_card(
-                                    ui,
-                                    &format!("root_{insert_idx}"),
-                                    insert_idx,
-                                    &mut self.plugin_draft.steps[insert_idx],
-                                    false,
-                                )
-                            },
+                        let response = Self::render_plugin_step_card(
+                            ui,
+                            &format!("root_{insert_idx}"),
+                            Some("root"),
+                            insert_idx,
+                            &mut self.plugin_draft.steps[insert_idx],
+                            false,
                         );
-                        if response.inner.remove {
+                        if response.remove {
                             remove_idx = Some(insert_idx);
                         }
                         ui.add_space(4.0);
@@ -1602,7 +1644,9 @@ impl QuickerApp {
                                         });
                                     });
                                 if let Some(payload) = dropped {
-                                    move_request = Some((payload.from, insert_idx));
+                                    if payload.scope == "key_macro_root" {
+                                        move_request = Some((payload.from, insert_idx));
+                                    }
                                 }
 
                                 if insert_idx == self.plugin_draft.key_macro_steps.len() {
@@ -1611,7 +1655,10 @@ impl QuickerApp {
 
                                 let response = ui.dnd_drag_source(
                                     egui::Id::new(("key_macro_step", insert_idx)),
-                                    StepDragPayload { from: insert_idx },
+                                    StepDragPayload {
+                                        scope: "key_macro_root".into(),
+                                        from: insert_idx,
+                                    },
                                     |ui| {
                                         Self::render_key_macro_step_card(
                                             ui,
