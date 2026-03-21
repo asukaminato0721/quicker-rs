@@ -43,16 +43,18 @@ jobs:
           echo "WASM_BINDGEN_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Install wasm-bindgen-cli
-        run: cargo binstall wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --no-confirm
+        run: |
+          TOOLS_ROOT="$RUNNER_TEMP/wasm-bindgen-cli"
+          cargo binstall wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --no-confirm --root "$TOOLS_ROOT"
+          echo "WASM_BINDGEN_BIN=$TOOLS_ROOT/bin/wasm-bindgen" >> "$GITHUB_ENV"
 
       - name: Build wasm site
         run: |
-          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
           cargo build --release --target wasm32-unknown-unknown --lib
           rm -rf dist
           mkdir -p dist
           cp index.html dist/index.html
-          "$CARGO_BIN/wasm-bindgen" \
+          "$WASM_BINDGEN_BIN" \
             --target web \
             --no-typescript \
             --out-dir dist/app \
