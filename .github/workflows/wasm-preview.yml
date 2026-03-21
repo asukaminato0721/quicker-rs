@@ -47,11 +47,12 @@ jobs:
 
       - name: Build wasm site
         run: |
+          CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin"
           cargo build --release --target wasm32-unknown-unknown --lib
           rm -rf dist
           mkdir -p dist
           cp index.html dist/index.html
-          wasm-bindgen \
+          "$CARGO_BIN/wasm-bindgen" \
             --target web \
             --no-typescript \
             --out-dir dist/app \
