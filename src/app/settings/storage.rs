@@ -32,12 +32,14 @@ impl QuickerApp {
                         self.show_toast("Config saved.".into(), false);
                     }
 
+                    #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Open Config File").clicked() {
                         if let Err(err) = open::that(&config_path) {
                             self.show_toast(format!("Failed to open config file: {}", err), true);
                         }
                     }
 
+                    #[cfg(not(target_arch = "wasm32"))]
                     if ui.button("Open Config Folder").clicked() {
                         if let Some(parent) = config_path.parent() {
                             if let Err(err) = open::that(parent) {
@@ -48,6 +50,15 @@ impl QuickerApp {
                             }
                         }
                     }
+
+                    #[cfg(target_arch = "wasm32")]
+                    ui.label(
+                        egui::RichText::new(
+                            "Browser preview uses an in-memory config. Native file access is disabled.",
+                        )
+                        .small()
+                        .weak(),
+                    );
                 });
             },
         );

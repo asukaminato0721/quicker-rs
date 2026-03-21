@@ -1,0 +1,53 @@
+name: wasm-preview
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - web-preview
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: wasm-preview
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      - name: Build wasm site
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          trunk build --release --public-url "/${REPO_NAME}/"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

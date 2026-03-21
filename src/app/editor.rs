@@ -1150,10 +1150,8 @@ impl QuickerApp {
             }
             ui.heading("Script Output");
             if ui.button("📋 Copy").clicked() {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    let _ = cb.set_text(&self.script_output);
-                    self.show_toast("Copied!".into(), false);
-                }
+                ui.ctx().copy_text(self.script_output.clone());
+                self.show_toast("Copied!".into(), false);
             }
         });
         ui.separator();

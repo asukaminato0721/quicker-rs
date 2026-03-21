@@ -3,13 +3,18 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Read;
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 #[cfg(all(
@@ -2959,6 +2964,7 @@ fn virtual_key_name(code: u32) -> Option<&'static str> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> ExecResult {
     #[cfg(test)]
     if let Some(result) = test_spawn_program(command, args, working_dir) {
@@ -2976,6 +2982,12 @@ fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> E
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn spawn_program(_command: &str, _args: &[String], _working_dir: Option<&str>) -> ExecResult {
+    ExecResult::Err("Program launching is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn open_target(target: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_open_target(target) {
@@ -2985,6 +2997,12 @@ fn open_target(target: &str) -> Result<(), String> {
     open::that(target).map_err(|e| e.to_string())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn open_target(_target: &str) -> Result<(), String> {
+    Err("Opening native targets is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn write_clipboard_text(text: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_write_clipboard_text(text) {
@@ -2997,6 +3015,12 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
         .map_err(|e| format!("Clipboard error: {}", e))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn write_clipboard_text(_text: &str) -> Result<(), String> {
+    Err("Direct clipboard writes are unavailable in the web preview runtime".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn write_clipboard_html(html: &str, alt_text: Option<&str>) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_write_clipboard_html(html, alt_text) {
@@ -3009,6 +3033,12 @@ fn write_clipboard_html(html: &str, alt_text: Option<&str>) -> Result<(), String
         .map_err(|e| format!("Clipboard error: {}", e))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn write_clipboard_html(_html: &str, _alt_text: Option<&str>) -> Result<(), String> {
+    Err("HTML clipboard writes are unavailable in the web preview runtime".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn read_clipboard_html() -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_read_clipboard_html() {
@@ -3022,6 +3052,12 @@ fn read_clipboard_html() -> Result<String, String> {
         .map_err(|e| format!("Clipboard error: {}", e))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn read_clipboard_html() -> Result<String, String> {
+    Err("Clipboard access is unavailable in the web preview runtime".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
 
@@ -3045,6 +3081,12 @@ fn read_clipboard_text() -> Result<String, String> {
     )
 }
 
+#[cfg(target_arch = "wasm32")]
+fn read_clipboard_text() -> Result<String, String> {
+    Err("Clipboard access is unavailable in the web preview runtime".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn read_standard_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<String> {
     #[cfg(test)]
     if let Some(text) = test_read_standard_clipboard_text() {
@@ -3054,6 +3096,7 @@ fn read_standard_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<St
     normalize_clipboard_text(clipboard.get_text().ok())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(all(
     unix,
     not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
@@ -3075,6 +3118,7 @@ fn read_primary_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<Str
 
 type ActionStateStore = HashMap<String, HashMap<String, String>>;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn action_state_store_path() -> std::path::PathBuf {
     let dir = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -3083,6 +3127,7 @@ fn action_state_store_path() -> std::path::PathBuf {
     dir.join("action_state.json")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_action_state_scope(scope: &str) -> HashMap<String, String> {
     #[cfg(test)]
     if let Some(state) = test_load_action_state_scope(scope) {
@@ -3099,6 +3144,12 @@ fn load_action_state_scope(scope: &str) -> HashMap<String, String> {
     store.get(scope).cloned().unwrap_or_default()
 }
 
+#[cfg(target_arch = "wasm32")]
+fn load_action_state_scope(_scope: &str) -> HashMap<String, String> {
+    HashMap::new()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Result<(), String> {
     #[cfg(test)]
     if test_save_action_state_scope(scope, state) {
@@ -3117,6 +3168,12 @@ fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Resu
         .map_err(|err| format!("Failed to save action state store: {err}"))
 }
 
+#[cfg(target_arch = "wasm32")]
+fn save_action_state_scope(_scope: &str, _state: &HashMap<String, String>) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn show_message_box(title: &str, message: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_show_message_box(title, message) {
@@ -3200,6 +3257,12 @@ fn show_message_box(title: &str, message: &str) -> Result<(), String> {
     Err("No supported message box backend was found".into())
 }
 
+#[cfg(target_arch = "wasm32")]
+fn show_message_box(_title: &str, _message: &str) -> Result<(), String> {
+    Err("Message boxes are unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_select_folder_dialog(prompt, init_dir) {
@@ -3305,6 +3368,12 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn select_folder_dialog(_prompt: &str, _init_dir: Option<&str>) -> Result<String, String> {
+    Err("Folder selection is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn prompt_user_input_dialog(
     prompt: &str,
     default_value: &str,
@@ -3398,6 +3467,15 @@ fn prompt_user_input_dialog(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn prompt_user_input_dialog(
+    _prompt: &str,
+    _default_value: &str,
+    _multiline: bool,
+) -> Result<String, String> {
+    Err("Prompt dialogs are unavailable in the web preview".into())
+}
+
 fn normalize_runtime_path(path: &str) -> String {
     let expanded = path.trim().replace('\\', std::path::MAIN_SEPARATOR_STR);
     expanded
@@ -3444,6 +3522,7 @@ fn ps_single_quote(input: &str) -> String {
     input.replace('\'', "''")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn download_to_file(
     url: &str,
     save_dir: &str,
@@ -3570,6 +3649,17 @@ fn download_to_file(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn download_to_file(
+    _url: &str,
+    _save_dir: &str,
+    _save_name: &str,
+    _options: &DownloadRequestOptions,
+    _control: Option<&ActionExecutionControl>,
+) -> Result<String, String> {
+    Err("File downloads are unavailable in the web preview".into())
+}
+
 fn read_file_path_reference(path: &str) -> Result<String, String> {
     let normalized = normalize_runtime_path(path);
     if Path::new(&normalized).exists() {
@@ -3579,6 +3669,7 @@ fn read_file_path_reference(path: &str) -> Result<String, String> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn read_binary_file(path: &str) -> Result<Vec<u8>, String> {
     let normalized = normalize_runtime_path(path);
     let mut file = fs::File::open(&normalized)
@@ -3587,6 +3678,11 @@ fn read_binary_file(path: &str) -> Result<Vec<u8>, String> {
     file.read_to_end(&mut bytes)
         .map_err(|err| format!("Failed to read file '{}': {err}", normalized))?;
     Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_binary_file(_path: &str) -> Result<Vec<u8>, String> {
+    Err("Binary file reads are unavailable in the web preview".into())
 }
 
 fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
@@ -3673,6 +3769,7 @@ fn base64_encode(bytes: &[u8]) -> String {
     output
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn delete_file_path(path: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_delete_file_path(path) {
@@ -3685,6 +3782,11 @@ fn delete_file_path(path: &str) -> Result<(), String> {
     }
     fs::remove_file(&normalized)
         .map_err(|err| format!("Failed to delete file '{}': {err}", normalized))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn delete_file_path(_path: &str) -> Result<(), String> {
+    Err("File deletion is unavailable in the web preview".into())
 }
 
 fn derive_download_file_name(url: &str) -> String {
@@ -3741,6 +3843,7 @@ fn ensure_not_cancelled(control: Option<&ActionExecutionControl>) -> Result<(), 
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn wait_for_child_cancelable(
     child: &mut Child,
     control: Option<&ActionExecutionControl>,
@@ -3764,6 +3867,7 @@ fn wait_for_child_cancelable(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_command_for_status(
     mut command: Command,
     control: Option<&ActionExecutionControl>,
@@ -3775,6 +3879,7 @@ fn run_command_for_status(
     wait_for_child_cancelable(&mut child, control, context)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_command_for_output(
     mut command: Command,
     control: Option<&ActionExecutionControl>,
@@ -3790,6 +3895,7 @@ fn run_command_for_output(
         .map_err(|err| format!("Failed to collect {context} output: {err}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn run_shell_command(
     script: &str,
     shell: &str,
@@ -3838,6 +3944,16 @@ fn run_shell_command(
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn run_shell_command(
+    _script: &str,
+    _shell: &str,
+    _control: Option<&ActionExecutionControl>,
+) -> ExecResult {
+    ExecResult::Err("Shell execution is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_send_key_combo(modifiers, key) {
@@ -3867,6 +3983,12 @@ fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
         })
 }
 
+#[cfg(target_arch = "wasm32")]
+fn send_key_combo(_modifiers: &[String], _key: &str) -> Result<(), String> {
+    Err("Key automation is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn type_input_text(text: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_type_input_text(text) {
@@ -3893,6 +4015,12 @@ fn type_input_text(text: &str) -> Result<(), String> {
         })
 }
 
+#[cfg(target_arch = "wasm32")]
+fn type_input_text(_text: &str) -> Result<(), String> {
+    Err("Text automation is unavailable in the web preview".into())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn sleep_millis(delay_ms: u64, control: Option<&ActionExecutionControl>) -> Result<(), String> {
     #[cfg(test)]
     {
@@ -3909,6 +4037,11 @@ fn sleep_millis(delay_ms: u64, control: Option<&ActionExecutionControl>) -> Resu
         remaining -= slice;
     }
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sleep_millis(_delay_ms: u64, control: Option<&ActionExecutionControl>) -> Result<(), String> {
+    ensure_not_cancelled(control)
 }
 
 fn parse_quicker_action_document(input: &str) -> Result<QuickerActionDocument, String> {

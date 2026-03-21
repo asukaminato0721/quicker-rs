@@ -1,5 +1,7 @@
 use crate::action::{Action, ActionKind};
-use crate::focus::{browser_family, FocusedProcess, BROWSER_PROCESS_PATTERNS};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::focus::BROWSER_PROCESS_PATTERNS;
+use crate::focus::{browser_family, FocusedProcess};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -54,6 +56,7 @@ fn default_height() -> f32 {
 
 impl Config {
     /// Path to the config file.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn config_path() -> PathBuf {
         let dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -62,7 +65,13 @@ impl Config {
         dir.join("config.toml")
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn config_path() -> PathBuf {
+        PathBuf::from("browser-preview://config.toml")
+    }
+
     /// Load config from disk, or create a default one.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn load() -> Self {
         let path = Self::config_path();
         if path.exists() {
@@ -90,6 +99,12 @@ impl Config {
         cfg
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn load() -> Self {
+        Self::default()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn migrate_loaded(mut cfg: Self) -> (Self, bool) {
         let mut changed = false;
 
@@ -133,6 +148,7 @@ impl Config {
     }
 
     /// Save config to disk.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save(&self) {
         let path = Self::config_path();
         match toml::to_string_pretty(self) {
@@ -145,6 +161,11 @@ impl Config {
             }
             Err(e) => tracing::error!("Failed to serialize config: {e}"),
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn save(&self) {
+        let _ = self;
     }
 }
 
@@ -160,6 +181,23 @@ impl Profile {
 
 impl Default for Config {
     fn default() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self {
+                toggle_hotkey: default_toggle_hotkey(),
+                columns: default_columns(),
+                panel_width: 1100.0,
+                panel_height: 760.0,
+                profiles: vec![Profile {
+                    name: "Preview".into(),
+                    description: "Browser-safe actions for the GitHub Pages demo".into(),
+                    match_processes: vec![],
+                    actions: example_actions(),
+                }],
+            };
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         Self {
             toggle_hotkey: default_toggle_hotkey(),
             columns: default_columns(),
@@ -179,6 +217,74 @@ impl Default for Config {
 }
 
 /// Starter actions so the panel isn't empty on first launch.
+#[cfg(target_arch = "wasm32")]
+fn example_actions() -> Vec<Action> {
+    vec![
+        Action {
+            name: "Project Repo".into(),
+            description: "Open the GitHub repository in a new tab".into(),
+            icon: Some("🐙".into()),
+            tags: vec!["github".into(), "repo".into(), "source".into()],
+            hotkey: None,
+            kind: ActionKind::OpenUrl {
+                url: "https://github.com/asukaminato0721/quicker-rs".into(),
+            },
+        },
+        Action {
+            name: "Rust + egui".into(),
+            description: "Open the egui project page".into(),
+            icon: Some("🦀".into()),
+            tags: vec!["rust".into(), "egui".into(), "ui".into()],
+            hotkey: None,
+            kind: ActionKind::OpenUrl {
+                url: "https://github.com/emilk/egui".into(),
+            },
+        },
+        Action {
+            name: "Copy Demo Text".into(),
+            description: "Exercise the clipboard path that still works in the browser preview".into(),
+            icon: Some("📋".into()),
+            tags: vec!["copy".into(), "clipboard".into(), "demo".into()],
+            hotkey: None,
+            kind: ActionKind::CopyText {
+                text: "Hello from the Quicker-RS web preview".into(),
+            },
+        },
+        Action {
+            name: "Preview Notes".into(),
+            description: "What the GitHub Pages build can and cannot demonstrate".into(),
+            icon: Some("🧭".into()),
+            tags: vec!["preview".into(), "notes".into(), "web".into()],
+            hotkey: None,
+            kind: ActionKind::Group {
+                actions: vec![
+                    Action {
+                        name: "Native Build".into(),
+                        description: "Desktop-only integrations stay in the native binary".into(),
+                        icon: Some("🖥".into()),
+                        tags: vec!["desktop".into(), "native".into()],
+                        hotkey: None,
+                        kind: ActionKind::CopyText {
+                            text: "Desktop build keeps hotkeys, shelling out, file access, and focused-window matching.".into(),
+                        },
+                    },
+                    Action {
+                        name: "Web Build".into(),
+                        description: "Browser preview focuses on layout and safe interactions".into(),
+                        icon: Some("🌐".into()),
+                        tags: vec!["web".into(), "wasm".into()],
+                        hotkey: None,
+                        kind: ActionKind::CopyText {
+                            text: "Web preview supports browsing the UI, opening links, editing plugins, and copying text.".into(),
+                        },
+                    },
+                ],
+            },
+        },
+    ]
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn example_actions() -> Vec<Action> {
     let terminal = Action {
         name: "Terminal".into(),
@@ -359,6 +465,7 @@ fn default_shell() -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn detect_command(candidates: &[&str]) -> Option<String> {
     candidates.iter().find_map(|command| {
         which::which(command)
@@ -367,6 +474,7 @@ fn detect_command(candidates: &[&str]) -> Option<String> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_text_editor_action() -> Option<Action> {
     let command = if cfg!(target_os = "windows") {
         Some("notepad".into())
@@ -392,6 +500,7 @@ fn default_text_editor_action() -> Option<Action> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_calculator_action() -> Option<Action> {
     let command = if cfg!(target_os = "windows") {
         Some("calc".into())
@@ -460,6 +569,7 @@ fn pdf_demo_actions() -> Vec<Action> {
     ]
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn default_browser_profile() -> Profile {
     Profile {
         name: "Browser".into(),
@@ -472,6 +582,7 @@ fn default_browser_profile() -> Profile {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn browser_actions() -> Vec<Action> {
     vec![
         Action {

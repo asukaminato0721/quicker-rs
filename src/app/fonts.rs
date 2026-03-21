@@ -1,6 +1,12 @@
 use super::*;
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
+#[cfg(target_arch = "wasm32")]
+pub(super) fn install_cjk_font_fallbacks(_ctx: &egui::Context) {}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn install_cjk_font_fallbacks(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut loaded_fonts = Vec::new();
@@ -52,6 +58,7 @@ pub(super) fn install_cjk_font_fallbacks(ctx: &egui::Context) {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn cjk_font_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -161,6 +168,7 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
     dedupe_paths(candidates)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn extend_if_exists(target: &mut Vec<PathBuf>, base: Option<PathBuf>, suffixes: &[&str]) {
     for suffix in suffixes {
         let path = base
@@ -173,10 +181,12 @@ fn extend_if_exists(target: &mut Vec<PathBuf>, base: Option<PathBuf>, suffixes: 
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn path_exists(path: &Path) -> bool {
     std::fs::metadata(path).is_ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut deduped = Vec::new();
     for path in paths {

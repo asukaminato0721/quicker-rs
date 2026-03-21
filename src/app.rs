@@ -7,11 +7,14 @@ use crate::config::Config;
 use crate::focus::{self, FocusTracker};
 use crate::search::SearchEngine;
 use eframe::egui;
+#[cfg(not(target_arch = "wasm32"))]
 use global_hotkey::hotkey::HotKey;
+#[cfg(not(target_arch = "wasm32"))]
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::collections::BTreeSet;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::sync::mpsc::{self, Receiver};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -126,7 +129,9 @@ struct ActionEditTarget {
 pub struct QuickerApp {
     config: Config,
     search: SearchEngine,
+    #[cfg(not(target_arch = "wasm32"))]
     _hotkey_manager: Option<GlobalHotKeyManager>,
+    #[cfg(not(target_arch = "wasm32"))]
     toggle_hotkey: Option<HotKey>,
     query: String,
     active_profile: usize,
@@ -171,17 +176,26 @@ impl QuickerApp {
         style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(6);
         cc.egui_ctx.set_style(style);
 
+        #[cfg(not(target_arch = "wasm32"))]
         let (hotkey_manager, toggle_hotkey, startup_notice) =
             init_toggle_hotkey(&config.toggle_hotkey);
+        #[cfg(target_arch = "wasm32")]
+        let startup_notice = Some((
+            "Web preview mode is active. Links and copy actions work here; desktop integrations stay in the native build."
+                .into(),
+            false,
+        ));
 
         Self {
             config,
             search: SearchEngine::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             _hotkey_manager: hotkey_manager,
+            #[cfg(not(target_arch = "wasm32"))]
             toggle_hotkey,
             query: String::new(),
             active_profile: 0,
-            focus_tracker: FocusTracker::new(std::process::id()),
+            focus_tracker: FocusTracker::new(current_process_id()),
             last_focus_poll: Instant::now() - FOCUS_POLL_INTERVAL,
             needs_focus_profile_sync: true,
             action_scope: None,
@@ -234,23 +248,60 @@ impl QuickerApp {
             return;
         }
 
-        let action_name = action.name.clone();
-        let action_clone = action.clone();
-        let control = ActionExecutionControl::new();
-        let (tx, rx) = mpsc::channel();
-        let repaint_ctx = ctx.clone();
-        self.action_control = Some(control.clone());
-        self.pending_action_name = Some(action_name.clone());
-        self.action_result_rx = Some(rx);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.execute_action_preview(ctx, action);
+            return;
+        }
 
-        thread::spawn(move || {
-            let result = action_clone.execute_with_control(Some(&control));
-            let _ = tx.send(ActionExecutionMessage {
-                action_name,
-                result,
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let action_name = action.name.clone();
+            let action_clone = action.clone();
+            let control = ActionExecutionControl::new();
+            let (tx, rx) = mpsc::channel();
+            let repaint_ctx = ctx.clone();
+            self.action_control = Some(control.clone());
+            self.pending_action_name = Some(action_name.clone());
+            self.action_result_rx = Some(rx);
+
+            thread::spawn(move || {
+                let result = action_clone.execute_with_control(Some(&control));
+                let _ = tx.send(ActionExecutionMessage {
+                    action_name,
+                    result,
+                });
+                repaint_ctx.request_repaint();
             });
-            repaint_ctx.request_repaint();
-        });
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn execute_action_preview(&mut self, ctx: &egui::Context, action: &Action) {
+        let action_name = action.name.clone();
+        let result = match &action.kind {
+            ActionKind::OpenUrl { url } => {
+                ctx.open_url(egui::OpenUrl::new_tab(url.clone()));
+                ExecResult::OkWithMessage(format!("Opened {url}"))
+            }
+            ActionKind::CopyText { text } => {
+                ctx.copy_text(text.clone());
+                ExecResult::OkWithMessage("Copied to clipboard".into())
+            }
+            ActionKind::Group { .. } => ExecResult::Ok,
+            ActionKind::OpenFile { .. }
+            | ActionKind::OpenFolder { .. }
+            | ActionKind::RunProgram { .. }
+            | ActionKind::RunShell { .. }
+            | ActionKind::SearchClipboardText { .. }
+            | ActionKind::OpenClipboardText { .. }
+            | ActionKind::RunClipboardText { .. }
+            | ActionKind::PluginPipeline { .. } => ExecResult::Err(
+                "This action depends on native OS integrations and is disabled in the web preview."
+                    .into(),
+            ),
+        };
+        self.handle_exec_result(&action_name, result);
     }
 
     fn request_cancel_running_action(&mut self, ctx: &egui::Context) {
@@ -938,6 +989,7 @@ fn truncate_label(text: &str, max_chars: usize) -> String {
     label
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn init_toggle_hotkey(
     hotkey_text: &str,
 ) -> (
@@ -986,6 +1038,16 @@ fn init_toggle_hotkey(
     }
 
     (Some(manager), Some(hotkey), None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn current_process_id() -> u32 {
+    std::process::id()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_process_id() -> u32 {
+    0
 }
 
 #[cfg(test)]

@@ -5,56 +5,59 @@ edition = "2021"
 description = "A portable, cross-platform quick-action launcher inspired by Quicker"
 license = "MIT"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-# GUI - egui is extremely portable, compiles to a single binary
-eframe = { version = "0.33.3", default-features = false, features = [
-    "default_fonts",
-    "glow",
-    "wayland",
-    "x11",
-] }
 egui = "0.33.3"
 egui_extras = { version = "0.33.3", features = ["image"] }
+log = "0.4"
 
 # Serialization for config
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
-# Global hotkeys (cross-platform)
-global-hotkey = "0.6"
-
-# Open files/URLs with system default handler
-open = "5"
-
-# File system helpers
-dirs = "6"
-
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
 
 # Fuzzy matching for search
 fuzzy-matcher = "0.3"
-
-# Process spawning
-which = "7"
-
-# Clipboard
-arboard = { version = "3", features = ["wayland-data-control"] }
 
 # URL encoding for search actions
 urlencoding = "2"
 fancy-regex = "0.14"
 
-# Focused window / process detection for app-aware profiles
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { version = "0.33.3", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+global-hotkey = "0.6"
+open = "5"
+dirs = "6"
+tracing-subscriber = "0.3"
+which = "7"
+arboard = { version = "3", features = ["wayland-data-control"] }
 active-win-pos-rs = "0.10"
-
-# X11 mouse grab for global radial gestures on Linux
 xcb = "1.7.0"
-
-# KDE Wayland bridge over session D-Bus
 dbus = "0.9"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.33.3", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+] }
 
 [profile.release]
 opt-level = "z"     # Optimize for size
