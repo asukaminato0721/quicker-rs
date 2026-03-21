@@ -3,7 +3,7 @@ use super::*;
 impl QuickerApp {
     pub(super) fn render_toast(&mut self, ctx: &egui::Context) {
         if let Some(toast) = &self.toast {
-            if std::time::Instant::now() > toast.expires {
+            if Instant::now() > toast.expires {
                 self.toast = None;
                 return;
             }

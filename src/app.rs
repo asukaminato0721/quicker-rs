@@ -16,7 +16,10 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use std::sync::mpsc::{self, Receiver};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
 
 mod editor;
 mod fonts;
@@ -85,7 +88,7 @@ struct RadialMenuState {
 struct Toast {
     message: String,
     is_error: bool,
-    expires: std::time::Instant,
+    expires: Instant,
 }
 
 struct ActionExecutionMessage {
@@ -223,7 +226,7 @@ impl QuickerApp {
         self.toast = Some(Toast {
             message: msg,
             is_error,
-            expires: std::time::Instant::now() + std::time::Duration::from_secs(3),
+            expires: Instant::now() + Duration::from_secs(3),
         });
     }
 

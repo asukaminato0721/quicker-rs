@@ -2723,6 +2723,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "which 7.0.3",
  "xcb",
 ]

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 egui = "0.33.3"
 egui_extras = { version = "0.33.3", features = ["image"] }
 log = "0.4"
+web-time = "1"
 
 # Serialization for config
 serde = { version = "1", features = ["derive"] }
