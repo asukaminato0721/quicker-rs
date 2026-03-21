@@ -37,13 +37,25 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
-      - name: Install Trunk
-        run: cargo binstall trunk --no-confirm
+      - name: Resolve wasm-bindgen version
+        run: |
+          VERSION=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n '2s/version = "\(.*\)"/\1/p')
+          echo "WASM_BINDGEN_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install wasm-bindgen-cli
+        run: cargo binstall wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --no-confirm
 
       - name: Build wasm site
         run: |
-          REPO_NAME="${GITHUB_REPOSITORY#*/}"
-          trunk build --release --public-url "/${REPO_NAME}/"
+          cargo build --release --target wasm32-unknown-unknown --lib
+          rm -rf dist
+          mkdir -p dist
+          cp index.html dist/index.html
+          wasm-bindgen \
+            --target web \
+            --no-typescript \
+            --out-dir dist/app \
+            target/wasm32-unknown-unknown/release/quicker_rs.wasm
 
       - uses: actions/upload-pages-artifact@v3
         with:

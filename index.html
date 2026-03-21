@@ -7,11 +7,6 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>Quicker-RS Preview</title>
-    <link
-      data-trunk
-      rel="rust"
-      data-target-name="quicker_rs"
-    />
     <style>
       :root {
         color-scheme: dark;
@@ -108,5 +103,10 @@
       </section>
       <canvas id="quicker-canvas"></canvas>
     </main>
+    <script type="module">
+      import init from "./app/quicker_rs.js";
+
+      init();
+    </script>
   </body>
 </html>
