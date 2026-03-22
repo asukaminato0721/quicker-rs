@@ -27,7 +27,7 @@ mod overlay;
 mod panel;
 mod settings;
 
-use self::fonts::install_cjk_font_fallbacks;
+use self::fonts::install_font_fallbacks;
 use self::settings::SettingsPage;
 
 const FOCUS_POLL_INTERVAL: Duration = Duration::from_millis(800);
@@ -166,7 +166,7 @@ pub struct QuickerApp {
 impl QuickerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let config = Config::load();
-        install_cjk_font_fallbacks(&cc.egui_ctx);
+        install_font_fallbacks(&cc.egui_ctx);
 
         // Style: make it look clean
         let mut style = (*cc.egui_ctx.style()).clone();

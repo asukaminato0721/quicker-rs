@@ -1,55 +1,49 @@
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn install_cjk_font_fallbacks(_ctx: &egui::Context) {}
+pub(super) fn install_font_fallbacks(_ctx: &egui::Context) {}
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn install_cjk_font_fallbacks(ctx: &egui::Context) {
+pub(super) fn install_font_fallbacks(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let mut loaded_fonts = Vec::new();
 
     for path in cjk_font_candidates() {
-        let Some(font_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-
-        if fonts.font_data.contains_key(font_name) {
-            continue;
+        if load_font(&mut fonts, &path, egui::FontData::from_owned, &mut loaded_fonts) {
+            tracing::debug!("loaded CJK fallback font {}", path.display());
         }
+    }
 
-        match std::fs::read(&path) {
-            Ok(data) => {
-                let font_name = font_name.to_owned();
-                fonts.font_data.insert(
-                    font_name.clone(),
-                    std::sync::Arc::new(egui::FontData::from_owned(data)),
-                );
-
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                    family.push(font_name.clone());
-                }
-                if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                    family.push(font_name.clone());
-                }
-
-                loaded_fonts.push(path);
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => tracing::debug!("failed to load font {}: {}", path.display(), err),
+    for path in emoji_font_candidates() {
+        if load_font(
+            &mut fonts,
+            &path,
+            |data| {
+                egui::FontData::from_owned(data).tweak(egui::FontTweak {
+                    scale: 0.95,
+                    ..Default::default()
+                })
+            },
+            &mut loaded_fonts,
+        ) {
+            tracing::debug!("loaded emoji fallback font {}", path.display());
         }
     }
 
     if loaded_fonts.is_empty() {
-        tracing::debug!("no CJK fallback fonts found on the system");
+        tracing::debug!("no extra CJK or emoji fallback fonts found on the system");
         return;
     }
 
     ctx.set_fonts(fonts);
     tracing::info!(
-        "loaded CJK fallback fonts: {}",
+        "loaded extra fallback fonts: {}",
         loaded_fonts
             .iter()
             .map(|path| path.display().to_string())
@@ -166,6 +160,95 @@ fn cjk_font_candidates() -> Vec<PathBuf> {
     }
 
     dedupe_paths(candidates)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn emoji_font_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    extend_if_exists(
+        &mut candidates,
+        dirs::home_dir(),
+        &[
+            ".local/share/fonts/NotoColorEmoji.ttf",
+            ".local/share/fonts/NotoEmoji-Regular.ttf",
+            ".fonts/NotoColorEmoji.ttf",
+            ".fonts/NotoEmoji-Regular.ttf",
+        ],
+    );
+
+    #[cfg(target_os = "linux")]
+    extend_if_exists(
+        &mut candidates,
+        None,
+        &[
+            "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+            "/usr/share/fonts/google-noto/NotoColorEmoji.ttf",
+            "/usr/share/fonts/opentype/noto/NotoColorEmoji.ttf",
+        ],
+    );
+
+    #[cfg(target_os = "macos")]
+    extend_if_exists(
+        &mut candidates,
+        None,
+        &["/System/Library/Fonts/Apple Color Emoji.ttc"],
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let windows_dir = std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let local_fonts_dir =
+            dirs::data_local_dir().map(|dir| dir.join(r"Microsoft\Windows\Fonts"));
+
+        extend_if_exists(&mut candidates, Some(windows_dir), &[r"Fonts\seguiemj.ttf"]);
+        extend_if_exists(&mut candidates, local_fonts_dir, &["seguiemj.ttf"]);
+    }
+
+    dedupe_paths(candidates)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_font(
+    fonts: &mut egui::FontDefinitions,
+    path: &Path,
+    build_font_data: impl FnOnce(Vec<u8>) -> egui::FontData,
+    loaded_fonts: &mut Vec<PathBuf>,
+) -> bool {
+    let Some(font_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    if fonts.font_data.contains_key(font_name) {
+        return false;
+    }
+
+    match std::fs::read(path) {
+        Ok(data) => {
+            let font_name = font_name.to_owned();
+            fonts
+                .font_data
+                .insert(font_name.clone(), Arc::new(build_font_data(data)));
+
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.push(font_name.clone());
+            }
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.push(font_name.clone());
+            }
+
+            loaded_fonts.push(path.to_path_buf());
+            true
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => {
+            tracing::debug!("failed to load font {}: {}", path.display(), err);
+            false
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
