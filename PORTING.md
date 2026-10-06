@@ -315,6 +315,30 @@ establish completion of the port.
   separately. Python tests: 17 passed. Clippy and Wasm checks passed, with preview
   dead-code warnings. The real action report now has two dependency blockers.
 
+## Step 16: Return dialog choices and cancel dialog processes (2026-10-07)
+
+- Checked message-box outputs and input emptiness against the MSI. Standard
+  message boxes now return OK, Cancel, Yes, or No and the corresponding Boolean.
+  Empty titles use the action title, including calls through subprograms.
+- Added managed cancellation to Linux message, input, and folder dialogs.
+  Cancellation stops the workflow even when `stopIfFail` is false. Dialog focus
+  no longer replaces the launcher's remembered external input target.
+- Text input preserves whitespace, supports multiline entry on both backends,
+  and retries required-value and regex validation. Failed input and folder
+  selection clear outputs. Missing `stopIfFail` now defaults to true.
+- Added static diagnostics for unsupported dialog options. Custom message boxes,
+  number/date input, text tools, and advanced window options remain gaps.
+  Focus restoration requires X11. Desktop portal behavior remains unverified.
+- Real kdialog and zenity tests passed all standard button results, Unicode text,
+  trailing newlines, initial folders, user cancellation, and action cancellation
+  for all three dialog types. Tests also cover overridden Zenity exit settings.
+- Downloaded a pinned OpenCC export. All preservation checks passed. Its report
+  identifies text tools, script/file modules, and expressions that still need work.
+  This is static evidence, not a successful OpenCC execution.
+- Native tests: 138 passed, nine opt-in tests ignored. Seven downloaded exports
+  passed preservation. Both corpus checks and 17 Python tests passed. Clippy
+  and Wasm checks passed. CI includes both GUI checks but has not run remotely.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
@@ -325,7 +349,7 @@ plugin workflows over additional launcher conveniences.
    authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
-   cancellation of dialogs and waited subprocesses, and focused end-to-end tests
+   advanced dialog options, desktop portal cancellation, and focused end-to-end tests
    of representative plugins.
 3. Native Wayland activation/input/focus support with explicit capability
    reporting; global mouse activation and pointer placement on X11.

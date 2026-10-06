@@ -532,6 +532,14 @@ impl QuickerApp {
 
     fn refresh_focused_process(&mut self) {
         self.last_focus_poll = Instant::now();
+        // A workflow dialog is part of this app. Keep the external input target.
+        if self
+            .action_control
+            .as_ref()
+            .is_some_and(ActionExecutionControl::dialog_active)
+        {
+            return;
+        }
         if self.focus_tracker.observe(focus::detect_focused_process()) {
             self.needs_focus_profile_sync = true;
         }

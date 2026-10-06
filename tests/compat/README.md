@@ -334,3 +334,42 @@ The regex engine is not .NET. The runtime rejects right-to-left matching and
 .NET object outputs. It reports engine differences and applies documented memory,
 match-count, and backtracking limits. It does not reproduce .NET's three-second
 match timeout or every syntax and Unicode rule.
+
+## Dialog evidence (2026-10-07)
+
+`MessageBoxOutputRunner.Execute` starts at RVA `0x2e9a3c` in the supplied MSI.
+It outputs the standard result name and sets `okOrYes` for enum values 1 and 6
+(OK and Yes). It restores the foreground window when requested. Empty titles
+use the action title. `UserInputStep.Execute` at `0x2b7ee0` delegates to
+`0x3eea7c`, which uses `String.IsNullOrEmpty` for `isEmpty`.
+The input validation handler at `0x1c6ee8` also uses `IsNullOrEmpty` and
+`Regex.IsMatch` without flags.
+`SelectFolderStep.Execute` starts at `0x2fda90` and delegates to `0x41905c`.
+The [official message-box definition](https://docs.getquicker.net/v2/xaction/modules/msgbox/)
+also describes these outputs and the custom mode that remains unsupported here.
+
+The [dialog smoke test](../../scripts/smoke-dialogs-x11.py) runs actual kdialog
+and zenity processes through imported workflows. It checks standard button
+results, both confirmation values, Unicode and literal argument text, trailing
+spaces/newlines, multiline input, initial directories, and user cancellation.
+It cancels each of the three dialog types through the launcher and verifies that
+the dialog closes without executing the next step, including `stopIfFail=0`.
+The test selects each backend through an isolated PATH and uses an isolated X11
+server and D-Bus session. GTK portal integration is disabled for this check.
+Desktop portal dialogs and native Wayland remain unverified.
+
+Zenity permits exit-code changes through environment variables. The runner sets
+fixed values for its child processes. The test supplies conflicting settings to
+verify that cancellation cannot become a positive response. The underlying
+[Zenity response implementation](https://github.com/GNOME/zenity/blob/master/src/util.c)
+describes these overrides.
+
+A new author export came from
+[Xebec33/chinese_quick_converter](https://github.com/Xebec33/chinese_quick_converter/blob/d00f7bf185506334075586ed0827659fe5c06c93/quick_converter.json).
+The downloaded `OpenCC` file has SHA-256
+`e511eca189b4db9fa323697c263e4686cabd590b918431caab15e6d4e1bcea5e`.
+Its local action ID is `14c751d1-1c05-4e21-9b82-128b35413d45`; it has no
+`SharedActionId`. Therefore it is not added to the shared-ID download registry.
+Use `--file` after downloading the pinned export. All four import/preservation
+checks passed. The report blocks its `SelectSingleFolder` input tool, script/file
+modules, and unsupported expressions. The complete OpenCC workflow was not run.

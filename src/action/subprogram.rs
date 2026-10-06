@@ -256,6 +256,7 @@ impl QuickerRuntime {
             self.control.clone(),
             &inputs,
         )?;
+        child.action_title = self.action_title.clone();
         child.subprogram_scopes = self.subprogram_scopes.clone();
         child.subprogram_scopes.push(data.sub_programs.clone());
         child.call_depth = self.call_depth + 1;

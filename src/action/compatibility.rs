@@ -311,6 +311,77 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if matches!(runner, "sys:MsgBox" | "sys:userInput" | "sys:selectFolder") {
+        issue(issues, path, "requires_native_dialog_backend", "warning");
+        if runner == "sys:selectFolder" {
+            issue(
+                issues,
+                path,
+                "folder_dialog_does_not_list_open_file_manager_windows",
+                "warning",
+            );
+        } else {
+            issue(
+                issues,
+                path,
+                "dialog_appearance_depends_on_desktop_backend",
+                "warning",
+            );
+            let restore = &step["InputParams"]["restoreFocus"];
+            if restore.is_null() || truthy(Some(&restore["Value"])) || restore["VarKey"].is_string()
+            {
+                issue(
+                    issues,
+                    path,
+                    "dialog_focus_restoration_requires_x11",
+                    "warning",
+                );
+            }
+        }
+        let keys: &[&str] = match runner {
+            "sys:MsgBox" => &["operation", "buttons", "icon"],
+            "sys:userInput" => dialogs::INPUT_OPTIONS,
+            _ => &[],
+        };
+        for key in keys
+            .iter()
+            .copied()
+            .chain((runner == "sys:userInput").then_some("pattern"))
+        {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || (key != "pattern" && s.contains('{')))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !binding["Value"].is_null()
+                && !dialogs::validate_option(runner, key, &binding["Value"])
+            {
+                issue(issues, &option_path, "unsupported_dialog_option", "blocker");
+            } else if key == "pattern" && binding["Value"].as_str().is_some_and(|s| !s.is_empty()) {
+                let pattern = value_to_string(&binding["Value"]);
+                if regex_steps::compile(&pattern, false, false, false).is_err()
+                    && !pattern.contains('{')
+                {
+                    issue(issues, &option_path, "unsupported_input_pattern", "blocker");
+                } else {
+                    issue(
+                        issues,
+                        &option_path,
+                        "regex_engine_semantics_require_validation",
+                        "warning",
+                    );
+                }
+            }
+        }
+    }
     if runner == "sys:regexExtract" {
         issue(
             issues,

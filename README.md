@@ -139,6 +139,24 @@ and UTF-8 `urlEncode`. These methods are available in the action editor.
 Unsupported methods retain their JSON instead of becoming lowercase operations.
 Both text modules report success and errors and honor `stopIfFail`.
 
+`sys:MsgBox` supports standard OK, OK/Cancel, Yes/No, and Yes/No/Cancel buttons.
+It returns the selected `result` and `okOrYes`. Custom message boxes remain
+unsupported. Dialog appearance and icons depend on kdialog or zenity.
+Closing a Yes/No dialog returns No. Button workflows retain JSON editor cards.
+
+`sys:userInput` supports text and multiline input, required values, and regex
+validation. It preserves trailing spaces and newlines. Failed input clears outputs.
+Number/date input, text tools, Markdown help, custom placement, and advanced
+window behavior remain unsupported. The checker reports these options.
+`sys:selectFolder` uses `initDir` and clears its path after a failed selection.
+It does not list open file manager windows. Both modules default `stopIfFail` to true.
+
+All three Linux dialog modules respond to action cancellation. They stop the
+managed dialog process and do not continue the workflow after cancellation.
+Focus restoration requires X11. Disable `restoreFocus` on native Wayland.
+The X11 tests cover local kdialog and zenity windows. Desktop portal dialogs
+and native Wayland behavior require separate validation.
+
 Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:each`,
 `sys:break`, and `sys:continue`. Nested loops handle break, continue, stop, and
 cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.

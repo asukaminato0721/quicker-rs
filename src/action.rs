@@ -1,6 +1,7 @@
 mod clipboard_steps;
 pub(crate) mod compatibility;
 mod control_flow;
+mod dialogs;
 mod expression;
 mod file_selection;
 mod key_steps;
@@ -353,6 +354,7 @@ pub enum ExecResult {
 #[derive(Debug, Clone, Default)]
 pub struct ActionExecutionControl {
     cancelled: Arc<AtomicBool>,
+    dialog_active: Arc<AtomicBool>,
 }
 
 impl ActionExecutionControl {
@@ -362,6 +364,10 @@ impl ActionExecutionControl {
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn dialog_active(&self) -> bool {
+        self.dialog_active.load(Ordering::SeqCst)
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -1653,6 +1659,10 @@ fn low_code_step_from_document(
                 other
             )),
         },
+        "sys:MsgBox" if binding_string(&step.input_params, "operation").is_some_and(|v| !matches!(v.as_str(), "" | "default"))
+            || binding_string(&step.input_params, "buttons").is_some_and(|v| v != "OK")
+            || ["result", "okOrYes"].iter().any(|key| output_var_name(&step.output_params, key).is_some()) =>
+            Err("Message buttons and outputs require the JSON editor".into()),
         "sys:MsgBox" => Ok(LowCodePluginStep::MsgBox {
             title: binding_string(&step.input_params, "title").unwrap_or_default(),
             message: binding_string(&step.input_params, "message").unwrap_or_default(),
@@ -1661,6 +1671,8 @@ fn low_code_step_from_document(
             prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
             output: output_var_name(&step.output_params, "path").unwrap_or_default(),
         }),
+        "sys:userInput" if binding_string(&step.input_params, "type").is_some_and(|v| !matches!(v.as_str(), "text" | "multiline")) =>
+            Err("This input type requires the JSON editor".into()),
         "sys:userInput" => Ok(LowCodePluginStep::UserInput {
             prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
             default_value: binding_string(&step.input_params, "defaultValue").unwrap_or_default(),
@@ -2026,6 +2038,7 @@ struct QuickerRuntime {
     variable_types: HashMap<String, u8>,
     last_message: Option<String>,
     state_scope: String,
+    action_title: String,
     action_state: HashMap<String, String>,
     control: Option<ActionExecutionControl>,
     clipboard_before_copy: Option<u64>,
@@ -2075,6 +2088,7 @@ impl QuickerRuntime {
             vars,
             variable_types,
             last_message: None,
+            action_title: "Quicker".into(),
             state_scope,
             action_state,
             control,
@@ -2151,68 +2165,9 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported stateStorage type: {other}")),
                 }
             }
-            Some(runner::StepRunner::MsgBox) => {
-                let title = self
-                    .input_string_opt(&step.input_params, "title")?
-                    .unwrap_or_default();
-                let message = self.input_string(&step.input_params, "message")?;
-                show_message_box(&title, &message)?;
-                self.assign_output(&step.output_params, "okOrYes", Value::Bool(true))?;
-                Ok(StepFlow::Continue)
-            }
-            Some(runner::StepRunner::SelectFolder) => {
-                let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")?
-                    .unwrap_or_default();
-                let init_dir = self.input_string_opt(&step.input_params, "initDir")?;
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
-                match select_folder_dialog(&prompt, init_dir.as_deref()) {
-                    Ok(path) => {
-                        self.assign_output(&step.output_params, "path", Value::String(path))?;
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
-                        Ok(StepFlow::Continue)
-                    }
-                    Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
-                        if stop_if_fail {
-                            Err(err)
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
-            Some(runner::StepRunner::UserInput) => {
-                let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")?
-                    .unwrap_or_default();
-                let default_value = self
-                    .input_string_opt(&step.input_params, "defaultValue")?
-                    .unwrap_or_default();
-                let multiline = matches!(
-                    self.input_string_opt(&step.input_params, "type")?
-                        .as_deref(),
-                    Some("multiline")
-                );
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
-                match prompt_user_input_dialog(&prompt, &default_value, multiline) {
-                    Ok(text) => {
-                        let is_empty = text.trim().is_empty();
-                        self.assign_output(&step.output_params, "textValue", Value::String(text))?;
-                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty))?;
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
-                        Ok(StepFlow::Continue)
-                    }
-                    Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
-                        if stop_if_fail {
-                            Err(err)
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
+            Some(runner::StepRunner::MsgBox) => self.run_message_box(step),
+            Some(runner::StepRunner::SelectFolder) => self.run_folder_dialog(step),
+            Some(runner::StepRunner::UserInput) => self.run_input_dialog(step),
             Some(runner::StepRunner::Delay) => {
                 let delay_ms = self
                     .input_string_opt(&step.input_params, "delayMs")?
@@ -2698,6 +2653,7 @@ fn execute_quicker_plugin_steps(
         Ok(runtime) => runtime,
         Err(error) => return ExecResult::Err(error),
     };
+    runtime.action_title = document.title.clone();
     match runtime.run_steps(&data.steps) {
         Ok(StepFlow::Continue) => match runtime.last_message {
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
@@ -3324,11 +3280,11 @@ fn save_action_state_scope(_scope: &str, _state: &HashMap<String, String>) -> Re
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
 fn show_message_box(title: &str, message: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_show_message_box(title, message) {
-        return result;
+        return result.map(|_| ());
     }
 
     #[cfg(target_os = "windows")]
@@ -3414,7 +3370,11 @@ fn show_message_box(_title: &str, _message: &str) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, String> {
+fn select_folder_dialog(
+    prompt: &str,
+    init_dir: Option<&str>,
+    control: Option<&ActionExecutionControl>,
+) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_select_folder_dialog(prompt, init_dir) {
         return result;
@@ -3423,14 +3383,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     #[cfg(target_os = "windows")]
     {
         let script = "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dlg.ShowDialog() -eq 'OK') { Write-Output $dlg.SelectedPath }";
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(script)
-            .output()
-            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        let mut command = Command::new("powershell");
+        command.arg("-NoProfile").arg("-Command").arg(script);
+        let output = run_command_for_output(command, control, "dialog")?;
         if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let text = dialogs::decode_text_output(&output.stdout)?;
             if text.is_empty() {
                 Err("Folder selection was cancelled".into())
             } else {
@@ -3442,20 +3399,18 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     }
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
-                "choose folder with prompt {:?}",
-                if prompt.is_empty() {
-                    "Select folder"
-                } else {
-                    prompt
-                }
-            ))
-            .output()
-            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        let mut command = Command::new("osascript");
+        command.arg("-e").arg(format!(
+            "choose folder with prompt {:?}",
+            if prompt.is_empty() {
+                "Select folder"
+            } else {
+                prompt
+            }
+        ));
+        let output = run_command_for_output(command, control, "dialog")?;
         if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let text = dialogs::decode_text_output(&output.stdout)?;
             if text.is_empty() {
                 Err("Folder selection was cancelled".into())
             } else {
@@ -3470,19 +3425,19 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
         if which::which("kdialog").is_ok() {
             let mut command = Command::new("kdialog");
             command.arg("--getexistingdirectory");
-            if let Some(init) = init_dir.filter(|value| !value.trim().is_empty()) {
-                command.arg(init);
-            }
             command.arg("--title").arg(if prompt.is_empty() {
                 "Select folder"
             } else {
                 prompt
             });
-            let output = command
-                .output()
-                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+            if let Some(init) = init_dir.filter(|value| !value.is_empty()) {
+                command
+                    .arg("--")
+                    .arg(format!("{}/", init.trim_end_matches('/')));
+            }
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let text = dialogs::decode_text_output(&output.stdout)?;
                 if text.is_empty() {
                     Err("Folder selection was cancelled".into())
                 } else {
@@ -3492,7 +3447,9 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
                 Err(format!("Folder dialog exited with {}", output.status))
             }
         } else if which::which("zenity").is_ok() {
-            let output = Command::new("zenity")
+            let mut command = Command::new("zenity");
+            dialogs::configure_zenity(&mut command);
+            command
                 .arg("--file-selection")
                 .arg("--directory")
                 .arg("--title")
@@ -3500,11 +3457,15 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
                     "Select folder"
                 } else {
                     prompt
-                })
-                .output()
-                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+                });
+            if let Some(init) = init_dir.filter(|s| !s.is_empty()) {
+                command
+                    .arg("--filename")
+                    .arg(format!("{}/", init.trim_end_matches('/')));
+            }
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let text = dialogs::decode_text_output(&output.stdout)?;
                 if text.is_empty() {
                     Err("Folder selection was cancelled".into())
                 } else {
@@ -3520,7 +3481,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn select_folder_dialog(_prompt: &str, _init_dir: Option<&str>) -> Result<String, String> {
+fn select_folder_dialog(
+    _prompt: &str,
+    _init_dir: Option<&str>,
+    _control: Option<&ActionExecutionControl>,
+) -> Result<String, String> {
     Err("Folder selection is unavailable in the web preview".into())
 }
 
@@ -3529,93 +3494,104 @@ fn prompt_user_input_dialog(
     prompt: &str,
     default_value: &str,
     multiline: bool,
+    restore: bool,
+    control: Option<&ActionExecutionControl>,
 ) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_prompt_user_input_dialog(prompt, default_value, multiline) {
         return result;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
+    #[cfg(target_os = "linux")]
+    let focus = dialogs::DialogFocus::capture(restore)?;
+    let result = (|| {
+        #[cfg(target_os = "windows")]
+        {
+            let script = format!(
             "Add-Type -AssemblyName Microsoft.VisualBasic; $v=[Microsoft.VisualBasic.Interaction]::InputBox(@'\n{}\n'@, 'Input', @'\n{}\n'@); Write-Output $v",
             prompt, default_value
         );
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(script)
-            .output()
-            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string())
-        } else {
-            Err(format!("Input dialog exited with {}", output.status))
+            let mut command = Command::new("powershell");
+            command.arg("-NoProfile").arg("-Command").arg(script);
+            let output = run_command_for_output(command, control, "dialog")?;
+            if output.status.success() {
+                dialogs::decode_text_output(&output.stdout)
+            } else {
+                Err(format!("Input dialog exited with {}", output.status))
+            }
         }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = Command::new("osascript");
+            command.arg("-e").arg(format!(
                 "text returned of (display dialog {:?} default answer {:?} with title \"Input\")",
                 prompt, default_value
-            ))
-            .output()
-            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string())
-        } else {
-            Err(format!("Input dialog exited with {}", output.status))
-        }
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if which::which("kdialog").is_ok() {
-            let mut command = Command::new("kdialog");
-            if multiline {
-                command.arg("--textinputbox");
-            } else {
-                command.arg("--inputbox");
-            }
-            let output = command
-                .arg(if prompt.is_empty() { "Input" } else { prompt })
-                .arg(default_value)
-                .output()
-                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+            ));
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout)
-                    .trim_end()
-                    .to_string())
+                dialogs::decode_text_output(&output.stdout)
             } else {
                 Err(format!("Input dialog exited with {}", output.status))
             }
-        } else if which::which("zenity").is_ok() {
-            let output = Command::new("zenity")
-                .arg("--entry")
-                .arg("--title")
-                .arg("Input")
-                .arg("--text")
-                .arg(if prompt.is_empty() { "Input" } else { prompt })
-                .arg("--entry-text")
-                .arg(default_value)
-                .output()
-                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-            if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout)
-                    .trim_end()
-                    .to_string())
-            } else {
-                Err(format!("Input dialog exited with {}", output.status))
-            }
-        } else {
-            Err("No supported input dialog backend was found".into())
         }
-    }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            if which::which("kdialog").is_ok() {
+                let mut command = Command::new("kdialog");
+                if multiline {
+                    command.arg("--textinputbox");
+                } else {
+                    command.arg("--inputbox");
+                }
+                command
+                    .arg(if prompt.is_empty() { "Input" } else { prompt })
+                    .arg("--")
+                    .arg(default_value);
+                let output = run_command_for_output(command, control, "dialog")?;
+                if output.status.success() {
+                    dialogs::decode_text_output(&output.stdout)
+                } else {
+                    Err(format!("Input dialog exited with {}", output.status))
+                }
+            } else if which::which("zenity").is_ok() {
+                let mut command = Command::new("zenity");
+                dialogs::configure_zenity(&mut command);
+                command.args(["--title", "Input", "--no-markup"]);
+                let mut initial = None;
+                if multiline {
+                    use std::io::Write;
+                    let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+                    file.write_all(default_value.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    command.args(["--text-info", "--editable", "--filename"]);
+                    command.arg(file.path());
+                    command
+                        .arg("--title")
+                        .arg(if prompt.is_empty() { "Input" } else { prompt });
+                    initial = Some(file);
+                } else {
+                    command.args(["--entry", "--text", prompt, "--entry-text", default_value]);
+                }
+                let output = run_command_for_output(command, control, "input dialog")?;
+                drop(initial);
+                if output.status.success() {
+                    if multiline {
+                        dialogs::decode_exact_output(&output.stdout)
+                    } else {
+                        dialogs::decode_text_output(&output.stdout)
+                    }
+                } else {
+                    Err(format!("Input dialog exited with {}", output.status))
+                }
+            } else {
+                Err("No supported input dialog backend was found".into())
+            }
+        }
+    })();
+    ensure_not_cancelled(control)?;
+    #[cfg(target_os = "linux")]
+    focus.restore(control)?;
+    result
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3623,6 +3599,8 @@ fn prompt_user_input_dialog(
     _prompt: &str,
     _default_value: &str,
     _multiline: bool,
+    _restore: bool,
+    _control: Option<&ActionExecutionControl>,
 ) -> Result<String, String> {
     Err("Prompt dialogs are unavailable in the web preview".into())
 }
@@ -4395,7 +4373,7 @@ struct ActionTestRuntime {
     delays: Vec<u64>,
     action_state_store: ActionStateStore,
     message_boxes: Vec<(String, String)>,
-    message_box_results: VecDeque<Result<(), String>>,
+    message_box_results: VecDeque<Result<String, String>>,
     folder_dialog_results: VecDeque<Result<String, String>>,
     input_dialog_results: VecDeque<Result<String, String>>,
     download_calls: Vec<(String, String, String, DownloadRequestOptions)>,
@@ -4530,7 +4508,7 @@ fn test_save_action_state_scope(scope: &str, state: &HashMap<String, String>) ->
 }
 
 #[cfg(test)]
-fn test_show_message_box(title: &str, message: &str) -> Option<Result<(), String>> {
+fn test_show_message_box(title: &str, message: &str) -> Option<Result<String, String>> {
     with_action_test_runtime(|runtime| {
         runtime
             .message_boxes
@@ -4900,7 +4878,7 @@ mod tests {
     fn quicker_plugin_executes_formula_to_image_sample() {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
-            runtime.message_box_results.push_back(Ok(()));
+            runtime.message_box_results.push_back(Ok("OK".into()));
             runtime
                 .folder_dialog_results
                 .push_back(Ok("/tmp/quicker-formula".into()));
