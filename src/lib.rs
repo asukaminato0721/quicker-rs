@@ -6,6 +6,8 @@ mod app;
 mod clipboard_monitor;
 mod config;
 mod focus;
+#[cfg(target_os = "linux")]
+mod input_windows;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod search;

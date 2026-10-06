@@ -628,9 +628,13 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             let binding = &step["InputParams"][key];
             let option_path = format!("{path}/InputParams/{key}");
             if binding["VarKey"].is_string()
-                || binding["Value"]
-                    .as_str()
-                    .is_some_and(|s| s.starts_with("$=") || (key != "pattern" && s.contains('{')))
+                || binding["Value"].as_str().is_some_and(|s| {
+                    s.trim_start().starts_with("$=")
+                        || (key != "pattern"
+                            && s.contains('{')
+                            && !(key == "extraSettings"
+                                && serde_json::from_str::<Value>(s).is_ok()))
+                })
             {
                 issue(
                     issues,

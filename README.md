@@ -194,7 +194,12 @@ Closing a Yes/No dialog returns No. Button workflows retain JSON editor cards.
 
 `sys:userInput` supports text and multiline input, required values, and regex
 validation. It preserves trailing spaces and newlines. Failed input clears outputs.
-Number/date input, text tools, Markdown help, custom placement, and advanced
+The native app supports `SelectSingleFile`, `SelectMultiFile`,
+`SelectSingleFolder`, and `SelectSavePath` text tools. These buttons open local
+Qt/GTK pickers and replace the complete input value. Multiple files use CRLF
+separators. Cancelling a picker keeps the previous text. Closing the input
+cancels an active picker. Saving a path does not write a file.
+Number/date input, other text tools, custom tool settings, Markdown help, custom placement, and advanced
 window behavior remain unsupported. The checker reports these options.
 `sys:selectFolder` uses `initDir` and clears its path after a failed selection.
 It does not list open file manager windows. Both modules default `stopIfFail` to true.

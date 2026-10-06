@@ -586,9 +586,43 @@ The GUI test verifies the pinned OpenCC hash. It executes the original update
 step with and without an existing window. The original expression displays
 `2/4` with controlled count/list variables. A screenshot confirms that progress.
 This does not execute the complete OpenCC action. Its script, form, selection,
-list-management, text-tool, Windows-path, and complex-expression gaps remain.
+list-management, Windows-path, and complex-expression gaps remain.
 
 The compatibility report now recognizes `sys:showWaitWin`. It reports active
 unsupported options and defers dynamic option values to runtime validation.
 X11 placement uses the desktop workarea. Per-monitor placement, native Wayland,
 Markdown help, rich button syntax, and taskbar progress still need implementation.
+
+## Input text-tool evidence
+
+The MSI tool parser at RVA `0xc57c8` reads comma-separated tool names. The
+configured file tool executes at `0xc968c`. The folder and save tools execute
+at `0xc9930` and `0xc9ca8`. All four path tools send `IsFullContent=true`.
+The input handler at `0x1c74f8` therefore replaces the complete text value.
+Multiple-file selection joins paths with CRLF. The separate legacy context-menu
+handlers use selection insertion. They do not define these configured buttons.
+Custom replacement modes through `extraSettings` remain unsupported.
+
+```sh
+cargo build --locked
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  dbus-run-session -- python3 scripts/smoke-input-tools-x11.py kdialog
+# Repeat with zenity to verify the GTK backend.
+```
+
+The test uses isolated KWin settings and the same dependencies as the waiting
+window test. It also needs kdialog or zenity. It checks whole-value replacement,
+Unicode paths, multiple-file CRLF output, save paths without file writes,
+validation retry, exact multiline text, and picker/input/action cancellation.
+Closing an input during a picker stops the picker. With `stopIfFail=false`,
+that input failure does not cancel the action.
+
+When a corpus directory is supplied, the test verifies the pinned OpenCC hash.
+It executes `/Steps/0/IfSteps/0/IfSteps/0` without changing that JSON step.
+The native picker returns a temporary directory through the original
+`build目录` output. This verifies one module. The complete OpenCC action still
+has script, form, list-management, selection, Windows-path, and expression gaps.
+
+The checker accepts these four built-in tools. It still rejects unknown tools
+and static custom settings. Native Wayland input tools remain unverified.

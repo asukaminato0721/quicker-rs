@@ -6,6 +6,7 @@ mod expression;
 mod file_dialogs;
 mod file_selection;
 mod file_steps;
+pub(crate) mod input_tools;
 mod key_steps;
 mod list_steps;
 mod preservation;
@@ -3401,6 +3402,7 @@ fn select_folder_dialog(
         if which::which("kdialog").is_ok() {
             let mut command = Command::new("kdialog");
             command.arg("--getexistingdirectory");
+            command.env("QT_QPA_PLATFORMTHEME", "generic");
             command.arg("--title").arg(if prompt.is_empty() {
                 "Select folder"
             } else {
@@ -3426,6 +3428,9 @@ fn select_folder_dialog(
             let mut command = Command::new("zenity");
             dialogs::configure_zenity(&mut command);
             command
+                .env("GTK_USE_PORTAL", "0")
+                .env("GDK_DEBUG", "no-portals")
+                .env("XDG_CURRENT_DESKTOP", "X-Generic")
                 .arg("--file-selection")
                 .arg("--directory")
                 .arg("--title")

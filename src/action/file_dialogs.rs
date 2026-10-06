@@ -80,6 +80,53 @@ struct FileDialog {
     top_most: bool,
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn choose_text_tool_file(
+    tool: input_tools::Tool,
+    current: &str,
+    control: &ActionExecutionControl,
+) -> Result<String, String> {
+    let current = if tool == input_tools::Tool::Files {
+        current.rsplit('\n').next().unwrap_or_default()
+    } else {
+        current
+    }
+    .trim();
+    let initial = if Path::new(current).is_file() {
+        Path::new(current)
+            .parent()
+            .unwrap_or(Path::new("/"))
+            .to_string_lossy()
+            .into_owned()
+            + "/"
+    } else {
+        String::new()
+    };
+    choose_files(
+        &FileDialog {
+            kind: match tool {
+                input_tools::Tool::Files => "openMultiFile",
+                input_tools::Tool::Save => "saveFile",
+                _ => "openFile",
+            }
+            .into(),
+            title: tool.label().into(),
+            initial,
+            filters: Vec::new(),
+            extension: String::new(),
+            top_most: false,
+        },
+        Some(control),
+    )
+    .map(|(path, paths)| {
+        if tool == input_tools::Tool::Files {
+            paths.join("\r\n")
+        } else {
+            path
+        }
+    })
+}
+
 impl QuickerRuntime {
     fn file_dialog_options(&self, step: &QuickerPluginStepDocument) -> Result<FileDialog, String> {
         let input = |key, default: &str| {

@@ -1041,6 +1041,8 @@ impl eframe::App for QuickerApp {
         crate::text_windows::render(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         crate::wait_windows::render(ctx);
+        #[cfg(target_os = "linux")]
+        crate::input_windows::render(ctx);
         self.render_radial_menu(ctx);
         self.render_toast(ctx);
         self.render_running_action(ctx);

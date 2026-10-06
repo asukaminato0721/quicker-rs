@@ -21,9 +21,8 @@ pub(super) fn validate_option(runner: &str, key: &str, value: &Value) -> bool {
                 | "Stop"
         ),
         ("sys:userInput", "type") => matches!(text.as_str(), "text" | "multiline"),
-        ("sys:userInput", "texttools" | "extraSettings" | "help" | "helpLink" | "fontfamily") => {
-            text.is_empty()
-        }
+        ("sys:userInput", "texttools") => input_tools::parse(&text).is_ok(),
+        ("sys:userInput", "extraSettings" | "help" | "helpLink" | "fontfamily") => text.is_empty(),
         ("sys:userInput", "closeOnDeactivated" | "submitWithReturn" | "topMost") => {
             !truthy(Some(value))
         }
@@ -174,14 +173,30 @@ impl QuickerRuntime {
                 .input_value(&step.input_params, "restoreFocus")?
                 .is_none_or(|v| truthy(Some(&v)));
             let _dialog = DialogSession::new(self.control.as_ref());
+            let tools = input_tools::parse(
+                &self
+                    .input_string_opt(&step.input_params, "texttools")?
+                    .unwrap_or_default(),
+            )?;
             loop {
-                let text = prompt_user_input_dialog(
-                    &prompt,
-                    &initial,
-                    multiline,
-                    restore,
-                    self.control.as_ref(),
-                )?;
+                let text = if tools.is_empty() {
+                    prompt_user_input_dialog(
+                        &prompt,
+                        &initial,
+                        multiline,
+                        restore,
+                        self.control.as_ref(),
+                    )?
+                } else {
+                    input_tools::prompt(
+                        &prompt,
+                        &initial,
+                        multiline,
+                        &tools,
+                        restore,
+                        self.control.as_ref(),
+                    )?
+                };
                 ensure_not_cancelled(self.control.as_ref())?;
                 let valid = if text.is_empty() {
                     !required

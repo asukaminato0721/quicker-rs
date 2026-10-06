@@ -499,6 +499,36 @@ establish completion of the port.
   remains unverified. Native Wayland, per-monitor placement, rich button syntax,
   Markdown help, and Windows taskbar progress remain gaps for this module.
 
+## Step 23: Input text tools (2026-10-07)
+
+- Deferred further automatic downloader work at the user's request. Continued
+  compatibility checks with the existing local corpus. Selection windows and
+  complex C# execution remain deferred.
+- Traced the MSI configured tool provider, result callback, and input handler.
+  Added single-file, multiple-file, folder, and save-path buttons to native input
+  windows. These tools replace the complete value. Multiple files use CRLF.
+  The legacy context-menu insertion behavior does not apply to these buttons.
+- Kept picker work outside the UI thread. Picker cancellation retains the text.
+  Input cancellation closes an active picker and obeys stopIfFail. Action
+  cancellation stops both windows and cannot continue through stopIfFail=false.
+  Existing required-value and regex validation also apply to these windows.
+- Used local Qt/GTK folder dialogs so managed cancellation owns their windows.
+  Added explicit limits on text size and open inputs. Unknown tools and custom
+  settings remain errors. Fixed the checker so static extraSettings JSON retains
+  its unsupported-option blocker instead of becoming a dynamic-value warning.
+- Both isolated X11/KWin backend tests pass. They cover whole-value replacement,
+  multiple paths, Unicode, whitespace, validation retry, and cancellation.
+  Executed the unchanged, hash-verified OpenCC userInput step through both native
+  folder pickers. Its original build-directory output matches the selected path.
+  The full OpenCC report retains 10 unsupported runners, two Windows paths,
+  and two complex expressions. Its text-tool option blocker is removed.
+- Validation: 182 native tests and seven existing corpus tests passed. Clippy
+  passed with warnings denied. Wasm compiled with 119 preview dead-code warnings.
+  Existing Qt and GTK dialog smoke tests also passed after the folder changes.
+  Added both input-tool GUI tests to CI. Remote CI and native Wayland remain
+  unverified. Other text tools, custom replacement modes, forms, and advanced
+  input window options still need implementation.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
