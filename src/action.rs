@@ -14,6 +14,7 @@ mod run_steps;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
+mod show_text;
 mod string_process;
 mod subprogram;
 mod text_steps;
@@ -2170,6 +2171,7 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::MsgBox) => self.run_message_box(step),
             Some(runner::StepRunner::SelectFolder) => self.run_folder_dialog(step),
+            Some(runner::StepRunner::ShowText) => self.run_show_text(step),
             Some(runner::StepRunner::UserInput) => self.run_input_dialog(step),
             Some(runner::StepRunner::Delay) => {
                 let delay_ms = self

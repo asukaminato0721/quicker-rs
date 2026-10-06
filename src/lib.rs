@@ -11,6 +11,8 @@ mod process;
 mod search;
 #[cfg(not(target_arch = "wasm32"))]
 mod storage;
+#[cfg(not(target_arch = "wasm32"))]
+mod text_windows;
 #[cfg(target_os = "linux")]
 mod x11;
 

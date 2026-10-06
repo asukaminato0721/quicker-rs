@@ -323,6 +323,66 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:showText" {
+        issue(
+            issues,
+            path,
+            "text_window_native_editor_features_differ",
+            "warning",
+        );
+        for key in super::show_text::CHECKED_OPTIONS {
+            let binding = &step["InputParams"][key];
+            let value = &binding["Value"];
+            if binding["VarKey"].is_string()
+                || value
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    &format!("{path}/InputParams/{key}"),
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !value.is_null() && !super::show_text::validate_option(key, value) {
+                issue(
+                    issues,
+                    &format!("{path}/InputParams/{key}"),
+                    "unsupported_text_window_option",
+                    "blocker",
+                );
+            }
+        }
+        let handle = &step["OutputParams"]["windowHandle"];
+        if !handle.is_null() && handle != "" {
+            issue(
+                issues,
+                path,
+                "text_window_native_handle_unavailable",
+                "blocker",
+            );
+        }
+        let mode = step["InputParams"]["type"]["Value"]
+            .as_str()
+            .unwrap_or("NO_WAIT");
+        let operations = &step["InputParams"]["operations"]["Value"];
+        if mode != "WAIT"
+            && !step["InputParams"]["type"]["VarKey"].is_string()
+            && !mode.starts_with("$=")
+            && !mode.contains('{')
+            && !step["InputParams"]["operations"]["VarKey"].is_string()
+            && operations.as_str().is_some_and(|s| {
+                !s.starts_with("$=") && !s.contains('{') && super::show_text::has_return_buttons(s)
+            })
+        {
+            issue(
+                issues,
+                path,
+                "text_window_return_buttons_require_wait",
+                "blocker",
+            );
+        }
+    }
     if runner == "sys:listOperations" {
         issue(
             issues,

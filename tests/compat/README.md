@@ -515,3 +515,31 @@ blocks, eight Linux path warnings, and two Windows literal warnings. Previously
 it reported ten unsupported expressions. The two statement blocks, other modules,
 and Windows commands still prevent full OpenCC execution. A syntax check does
 not establish that a path expression can run with every input value.
+
+
+## Text window evidence
+
+The MSI ShowTextStep dispatcher is at RVA `0x405144`. Window creation and
+configuration use `0x2d85d4` and `0x405be8`. Query uses `0x2d8360` and `0x405844`.
+Close uses `0x2d8f34` and `0x406820`. Wait-close uses `0x2d8204`.
+The official module catalog and text-window reference define the option names.
+
+The native implementation uses egui viewports. Action workers share bounded
+text documents with the UI thread. Each window has separate editor state.
+Unit tests cover replacement, update, exact append, limits, and UTF-16 offsets.
+Static checks reject unsupported modes, native handles, and advanced options.
+
+```sh
+cargo build --locked
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QT_QPA_PLATFORM=xcb QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  dbus-run-session -- python3 scripts/smoke-text-windows-x11.py
+```
+
+The test requires KWin, Xvfb, xdotool, D-Bus, and ImageMagick. It uses isolated
+configuration and runtime directories. It checks edited Unicode text, CRLF,
+selection, UTF-16 caret offsets, a return button, topMost, update, append,
+query, wait-close, programmatic close, failure continuation, and cancellation.
+It verifies the pinned OpenCC hash and executes three unchanged showText steps.
+Both NO_WAIT windows remain open when the action terminates. Other OpenCC modules
+are not executed by this test. The full action remains blocked.

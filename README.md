@@ -219,6 +219,26 @@ Focus restoration requires X11. Disable `restoreFocus` on native Wayland.
 The X11 tests cover local kdialog and zenity windows. Desktop portal dialogs
 and native Wayland behavior require separate validation.
 
+`sys:showText` uses native application windows. It supports `WAIT`, `NO_WAIT`,
+`CLOSE_WINDOW`, `GET_WIN_INFO`, `APPEND_TEXT`, `ACTIVATE_WINDOW`, and `WAIT_CLOSE`.
+Windows can remain open after an action ends. A nonempty `autoCloseKey` identifies
+one window. `=` uses the action state scope. Empty keys create separate windows.
+`updateIfExists` updates the document in an existing window. WAIT returns edited
+text, selected text, a UTF-16 caret offset, and a plain toolbar button value.
+Closing a window normally succeeds. Cancelling an action closes its waiting
+window and stops execution, even when `stopIfFail=false`.
+
+Text windows support line numbers, wrapping, font size, colors, topMost,
+Escape, close-on-blur, centered placement, and pixel dimensions. The native
+editor toolbar provides copy, select all, reset, wrap, and close. Its commands
+and shortcuts differ from the Windows editor. Limits are 32 open windows and
+1 MiB per document. Native window handles, window enumeration, syntax highlighting,
+custom fonts, percentage dimensions, other placement modes, saved placement,
+whole-line copy, state autosave, and advanced handlers remain unsupported.
+The checker reports those requests as blockers. The X11 test executes all three
+active OpenCC text-window steps without changes. Native Wayland window behavior
+still needs validation. Complex C# expression execution is deferred.
+
 Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:each`,
 `sys:break`, and `sys:continue`. Nested loops handle break, continue, stop, and
 cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.

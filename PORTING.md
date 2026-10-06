@@ -441,6 +441,30 @@ establish completion of the port.
   tests passed. Clippy passed with warnings denied. Wasm compiled with 116
   preview dead-code warnings. The application has no new runtime dependency.
 
+## Step 21: Native text windows (2026-10-07)
+
+- Deferred complex C# execution at the user's request. Preserved its unfinished
+  helper outside the worktree. The native application does not require .NET.
+- Inspected the MSI showText dispatcher, UI closure, query, close, and wait-close
+  methods. Added seven operations through native egui viewports. Action workers
+  can wait without blocking the UI. Non-waiting windows outlive their actions.
+- Added editing, selection, UTF-16 caret results, plain return buttons, line
+  numbers, wrapping, colors, font size, centered dimensions, and topMost.
+  Preserved keyed replacement, document update, exact append, and missing-window
+  results. Cancellation closes a newly opened waiting window and stops execution.
+- Bounded open windows and text sizes. Added explicit compatibility blockers for
+  unsupported options and native handles. The editor toolbar differs from the
+  Windows toolbar. Window enumeration, highlighting, custom fonts, advanced
+  handlers, autosave, and other placement modes remain incomplete.
+- The isolated X11/KWin test checks actual editing and window lifecycle. It runs
+  three unchanged, hash-verified OpenCC steps. Both NO_WAIT windows remain open
+  after action cancellation. Six downloaded-corpus tests pass. Full OpenCC still
+  has other blockers. Native Wayland text windows are not yet verified.
+- Validation: 172 native tests passed, 13 opt-in tests ignored. All 17 Python
+  tests passed. Clippy passed with warnings denied. Wasm compiled with 117
+  preview dead-code warnings. One earlier single-instance restart test failed
+  transiently. Its isolated rerun and two subsequent full runs passed.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
