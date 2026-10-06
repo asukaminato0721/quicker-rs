@@ -19,7 +19,7 @@ pub(super) fn needs_input_target(
         for step in steps.iter().filter(|s| !s.disabled) {
             if matches!(
                 step.step_runner_key.as_str(),
-                "sys:keyInput" | "sys:outputText" | "sys:getSelectedText"
+                "sys:keyInput" | "sys:outputText" | "sys:getSelectedText" | "sys:getSelectedFiles"
             ) {
                 return true;
             }

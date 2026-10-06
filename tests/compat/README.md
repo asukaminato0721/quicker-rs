@@ -63,8 +63,8 @@ Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
 [用QuickLook预览文件](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
 The other Citavi exports also have unresolved subprogram dependencies. QuickLook
-still needs `sys:getSelectedFiles` and a Linux replacement for `QuickLook.exe`.
-Its run, key-operation, and text-input steps are now recognized.
+still needs a Linux replacement for `QuickLook.exe`. All its step runners are now
+recognized. The adapted Linux execution test is described below.
 Passing preservation checks does not
 establish execution compatibility with Citavi, QuickLook, or Windows APIs.
 
@@ -242,3 +242,47 @@ xvfb-run -a python3 scripts/smoke-input-x11.py --text-cancel
 
 These checks passed on 2026-10-07. Simulated typing still depends on the target's
 input method and its handling of X11 keyboard events.
+
+## Selected file evidence
+
+The MSI `GetSelectedFilesStep.Execute` at RVA `0x2fbb8c` delegates to `0x4184d0`.
+The get operation calls `Wo7HearJ3wm` at `0x2fbc88`. It uses the native selection
+API and clipboard file-list fallbacks. The output helper at `0x2fc230` sets lists,
+names, first-file outputs, and count. The set operation calls the existing
+Explorer-window API. The Linux port does not substitute opening another window
+for that operation.
+The [official reference](https://docs.getquicker.net/v2/xaction/modules/getselectedfiles/)
+describes the copy fallback, wait interval, outputs, and sorting options.
+
+The X11 implementation requires a fresh copy event and a stable focused target.
+It reads `text/uri-list` or `x-special/gnome-copied-files`, including INCR transfers.
+Invalid or remote URIs fail the complete read. Failed reads clear file outputs.
+Size and time sorts require regular files. Unavailable timestamps return an
+error. Filename sorting uses deterministic Unicode ordering, not Windows locale
+rules. Native Wayland and `setSelection` remain unsupported.
+
+```sh
+xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test file_selection_transfers -- --ignored
+xvfb-run -a dbus-run-session -- python3 scripts/smoke-files-x11.py
+xvfb-run -a dbus-run-session -- python3 scripts/smoke-files-x11.py /path/to/quicklook-forum.json
+```
+
+All three checks passed on 2026-10-07. The transfer test covers ordinary and
+incremental transfers, GNOME fallback, unsupported formats, declared size limits,
+owner changes, timeout, and cancellation. Dolphin passed actual file selection,
+repeated identical copies, Unicode and space paths, natural sorting, and stale
+clipboard rejection from a terminal that does not copy files.
+
+The last command uses the real forum export with SHA-256
+`d0cd58a9baedbd2f2a6fffafde0be2c1603d5ba7a5660a674328e7c841780767`.
+It replaces only the program path inside the original steps with ImageMagick
+`display`. It retains file selection, branching, iteration, formatting, and launch
+parameters. It appends state writes for observations and changes the test title.
+The test verified completion and both image windows on two executions. This
+validates the adapted workflow. It does not run Windows QuickLook.
+
+The original export now has one static blocker: its Windows executable.
+Native tests passed 126 cases with eight opt-in tests excluded. Clippy passed
+with warnings denied. The Wasm check passed with preview dead-code warnings.
+All six downloaded exports passed preservation again. The ID download interface
+also fetched the pinned public `Ref->Ob` export again and verified its hash.

@@ -311,6 +311,55 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:getSelectedFiles" {
+        issue(
+            issues,
+            path,
+            "requires_x11_file_clipboard_and_target_window",
+            "warning",
+        );
+        for key in ["sortType", "waitMs"] {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !binding["Value"].is_null() {
+                let value = value_to_string(&binding["Value"]);
+                if (key == "sortType" && !file_selection::SORT_TYPES.contains(&value.as_str()))
+                    || (key == "waitMs" && value.parse::<u32>().is_err())
+                {
+                    issue(issues, &option_path, "unsupported_option", "blocker");
+                }
+            }
+        }
+        let sort = step["InputParams"]["sortType"]["Value"]
+            .as_str()
+            .unwrap_or("Default");
+        if matches!(sort, "Default" | "FileName" | "FileNameNature") {
+            issue(
+                issues,
+                path,
+                "filename_sort_can_differ_from_windows_locale",
+                "warning",
+            );
+        } else if sort != "Origin" {
+            issue(
+                issues,
+                path,
+                "requires_local_regular_file_metadata",
+                "warning",
+            );
+        }
+    }
     if runner == "sys:outputText" {
         let method = step["InputParams"]["method"]["Value"]
             .as_str()
@@ -509,6 +558,7 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
         "sys:fileOperation" => Some(("type", &["deleteFile"], "")),
         "sys:outputText" => Some(("method", &["paste", "input"], "paste")),
         "sys:getSelectedText" => Some(("format", &["UnicodeText", "Html"], "UnicodeText")),
+        "sys:getSelectedFiles" => Some(("operation", &["getSelection"], "getSelection")),
         _ => None,
     };
     if let Some((key, allowed, default)) = option {
@@ -789,6 +839,32 @@ mod tests {
             1
         );
         assert_eq!(report(json!({}))["runtime"]["executed"], false);
+    }
+
+    #[test]
+    fn selected_files_report_checks_operations_and_sorts() {
+        let report = |params: Value| {
+            inspect(&workflow(json!([
+                {"StepRunnerKey":"sys:getSelectedFiles", "InputParams":params}
+            ])))
+        };
+        for sort in file_selection::SORT_TYPES {
+            assert_eq!(exit_code(&report(json!({"sortType":{"Value":sort}}))), 0);
+        }
+        for params in [
+            json!({"operation":{"Value":"setSelection"}}),
+            json!({"waitMs":{"Value":"-1"}}),
+            json!({"sortType":{"Value":"Unknown"}}),
+        ] {
+            assert_eq!(exit_code(&report(params)), 1);
+        }
+        let dynamic = report(json!({"sortType":{"VarKey":"sort"}}));
+        assert!(dynamic["runtime"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["code"] == "dynamic_option_requires_validation"));
+        assert_eq!(dynamic["runtime"]["executed"], false);
     }
 
     #[test]

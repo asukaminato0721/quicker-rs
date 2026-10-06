@@ -138,6 +138,17 @@ trimming, and URL encoding. They do not return a source URL.
 UI Automation, action-parameter text, wait-window monitoring, and native Wayland
 clipboard events remain unsupported and are reported by the checker.
 
+`sys:getSelectedFiles` supports `getSelection` on X11. It sends Ctrl+C and requires
+a new clipboard event. It reads local file URIs, preserves Unicode paths, and
+returns file lists, names, first-file outputs, and a count. Failed reads clear
+these outputs. Repeated copies depend on the file manager sending a new event.
+Transfers support INCR, a 16 MiB limit, cancellation, and a five-second deadline.
+Filename and natural sorting can differ from Windows locale sorting. Size and
+timestamp sorting require local regular files and available metadata.
+`setSelection`, remote file URIs, and native Wayland remain unsupported.
+The [file selection test](scripts/smoke-files-x11.py) exercises Dolphin and can
+run the downloaded QuickLook workflow with a Linux preview program.
+
 `sys:activateProcessMainWindow` supports X11 window activation by PID, executable
 name/path, or application class. Class and title filters use regular expressions.
 It verifies focus before returning PID, window ID, and title outputs. It can

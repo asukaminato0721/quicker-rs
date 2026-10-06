@@ -2,6 +2,7 @@ mod clipboard_steps;
 pub(crate) mod compatibility;
 mod control_flow;
 mod expression;
+mod file_selection;
 mod key_steps;
 mod preservation;
 mod run_steps;
@@ -2076,6 +2077,7 @@ impl QuickerRuntime {
 
     fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
         match runner::StepRunner::from_key(&step.step_runner_key) {
+            Some(runner::StepRunner::GetSelectedFiles) => self.run_selected_files(step),
             Some(runner::StepRunner::KeyOperation) => self.run_key_operation(step),
             Some(runner::StepRunner::Run) => self.run_program_step(step),
             Some(runner::StepRunner::OpenUrl) => {
@@ -4400,6 +4402,7 @@ struct SpawnCall {
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct ActionTestRuntime {
+    file_selection_results: VecDeque<Result<Vec<String>, String>>,
     clipboard_snapshots: VecDeque<Result<(u64, Option<u32>), String>>,
     raw_clipboard_reads: VecDeque<Result<String, String>>,
     spawn_calls: Vec<SpawnCall>,

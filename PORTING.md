@@ -272,12 +272,35 @@ establish completion of the port.
 - The real QuickLook report now has two blockers: the selected-files runner and
   the Windows QuickLook executable. A complete Linux workflow still needs both.
 
+## Step 14: Read selected files and execute a downloaded workflow (2026-10-07)
+
+- Added `sys:getSelectedFiles` get mode after inspecting the MSI methods and
+  official module definition. It reports typed lists, names, count, success,
+  and errors. Failed reads clear outputs. Cancellation always stops execution.
+- Added X11 file clipboard transfers with a fresh-event requirement, owner and
+  target checks, INCR support, a 16 MiB limit, and cancellation. URI validation
+  rejects remote paths and invalid encodings. Sorting supports names, sizes,
+  and available timestamps. Windows locale ordering can differ.
+- Dolphin passed real selection, repeated identical copies, Unicode and space
+  paths, natural sorting, and stale clipboard rejection. Transfer tests passed
+  GNOME fallback, INCR, size checks, owner changes, timeout, and cancellation.
+- Ran the downloaded QuickLook forum workflow twice. Replaced its Windows
+  executable path with Linux ImageMagick display. Both selected images opened,
+  and the workflow completed. The original branches, loop, formatting, and
+  launch parameters remained intact. Windows QuickLook itself was not tested.
+- Native tests: 126 passed, eight opt-in tests ignored. Python tests: 17 passed.
+  Clippy and Wasm checks passed, with preview dead-code warnings. Six real
+  exports passed preservation. The public ID download and hash check passed.
+  Both new X11 checks are included in CI, which has not run remotely.
+- The original QuickLook report now has one blocker: its Windows executable.
+  Native Wayland, remote file selections, and setting selections remain gaps.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Implement missing modules found in real downloads, including selected files.
+1. Implement remaining modules and options found in real downloads.
    Validate shared subprogram execution when an export or
    authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.

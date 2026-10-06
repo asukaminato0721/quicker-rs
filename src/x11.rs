@@ -4,8 +4,10 @@ use crate::focus::FocusedProcess;
 use std::time::{Duration, Instant};
 use xcb::{x, Xid, XidNew};
 mod keyboard;
+mod selection;
 mod windows;
 pub(crate) use keyboard::Keyboard;
+pub(crate) use selection::read_file_selection;
 pub(crate) use windows::{WindowMatch, WindowQuery};
 
 xcb::atoms_struct! {

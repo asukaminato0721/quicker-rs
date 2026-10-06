@@ -13,7 +13,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool xterm imagemagick fonts-noto-cjk
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool xterm imagemagick fonts-noto-cjk dolphin dbus-x11
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all-targets --locked
@@ -25,6 +25,8 @@ jobs:
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --key-operation
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --output-text
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --text-cancel
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' dbus-run-session -- python3 scripts/smoke-files-x11.py
+      - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test file_selection_transfers -- --ignored
       - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test key_operations_query_state -- --ignored
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-plugin-editor-x11.py tests/fixtures/formula-image.json
       - run: xvfb-run -a cargo test clipboard_persists_after_action_worker_exits -- --ignored
