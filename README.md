@@ -129,6 +129,15 @@ Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:ea
 cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.
 Parallel list execution is unsupported. Loop progress bars are not displayed.
 
+On X11, `sys:waitClipboardChange` uses XFixes events and supports recent changes,
+timeouts, and cancellation. `sys:getSelectedText` sends Ctrl+C and reads fresh
+plain text or HTML. Some X11 applications emit no event for a repeated copy.
+For plain text, the fallback reads PRIMARY only if its owner belongs to the
+focused window. It then copies that text to CLIPBOARD. Selection reads support retry,
+trimming, and URL encoding. They do not return a source URL.
+UI Automation, action-parameter text, wait-window monitoring, and native Wayland
+clipboard events remain unsupported and are reported by the checker.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |

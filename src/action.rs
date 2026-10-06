@@ -1,3 +1,4 @@
+mod clipboard_steps;
 pub(crate) mod compatibility;
 mod control_flow;
 mod expression;
@@ -342,7 +343,7 @@ impl Action {
             steps.iter().filter(|step| !step.disabled).any(|step| {
                 matches!(
                     step.step_runner_key.as_str(),
-                    "sys:keyInput" | "sys:outputText"
+                    "sys:keyInput" | "sys:outputText" | "sys:getSelectedText"
                 ) || step.if_steps.as_deref().is_some_and(has_input)
                     || step.else_steps.as_deref().is_some_and(has_input)
             })
@@ -1990,6 +1991,7 @@ struct QuickerRuntime {
     state_scope: String,
     action_state: HashMap<String, String>,
     control: Option<ActionExecutionControl>,
+    clipboard_before_copy: Option<u64>,
 }
 
 impl QuickerRuntime {
@@ -2023,6 +2025,7 @@ impl QuickerRuntime {
             state_scope,
             action_state,
             control,
+            clipboard_before_copy: None,
         })
     }
 
@@ -2171,6 +2174,10 @@ impl QuickerRuntime {
                         .filter_map(virtual_key_modifier)
                         .map(str::to_string)
                         .collect::<Vec<_>>();
+                    if key_name.eq_ignore_ascii_case("c") && modifiers.iter().any(|m| m == "ctrl") {
+                        self.clipboard_before_copy =
+                            clipboard_steps::clipboard_snapshot().ok().map(|s| s.0);
+                    }
                     send_key_combo(&modifiers, key_name)?;
                 }
                 Ok(StepFlow::Continue)
@@ -2201,6 +2208,8 @@ impl QuickerRuntime {
                     }
                 }
             }
+            Some(runner::StepRunner::WaitClipboardChange) => self.run_wait_clipboard(step),
+            Some(runner::StepRunner::GetSelectedText) => self.run_selected_text(step),
             Some(runner::StepRunner::WriteClipboard) => {
                 let clipboard_type = self
                     .input_string_opt(&step.input_params, "type")?
@@ -4369,6 +4378,8 @@ struct SpawnCall {
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct ActionTestRuntime {
+    clipboard_snapshots: VecDeque<Result<(u64, Option<u32>), String>>,
+    raw_clipboard_reads: VecDeque<Result<String, String>>,
     spawn_calls: Vec<SpawnCall>,
     spawn_results: VecDeque<ExecResult>,
     opened_targets: Vec<String>,

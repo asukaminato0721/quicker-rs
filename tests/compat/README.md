@@ -55,7 +55,7 @@ python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --pu
 
 On 2026-10-06, the request downloaded `Ref->Ob` and matched the recorded SHA-256.
 All preservation checks passed. The runtime report returned `blocked` and exit code 1.
-It identified `sys:subprogram`, `sys:waitClipboardChange`, and
+It identified `sys:subprogram` and
 `sys:activateProcessMainWindow` as missing runners. The tool did not execute the action.
 
 Five other downloaded exports passed the same preservation checks.
@@ -95,3 +95,27 @@ RVA `0x3f18b4` only executes its true branch.
 Runtime tests check these orders with controlled workflows. They also check
 nested loops, typed items, stop propagation, invalid counters, and cancellation.
 These tests do not execute the downloaded actions' Windows applications.
+
+## Clipboard evidence
+
+The MSI `GetSelectedTextStep.Execute` delegates to the body at RVA `0x3ea6a4`.
+It reads text format, wait time, retry count, and trim settings, and returns text
+and encoded text. Its clipboard helper starts at RVA `0x1090a8`.
+The `WaitClipboardChangeStep` body at RVA `0x402098` checks sequence numbers,
+the sequence captured before Ctrl+C, the last clipboard change time, and a timeout.
+The original uses Windows clipboard events. The Linux backend uses XFixes and
+X server timestamps. It does not compare clipboard text to detect changes.
+
+Run the X11 event test and the real selected-text workflow:
+
+```sh
+xvfb-run -a cargo test x11_clipboard_events_include_identical_copies_and_exclude_primary -- --ignored
+xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test focused_selection_rejects_primary_owned_by_another_window -- --ignored
+xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test clipboard_wait_cancels_while_waiting -- --ignored
+cargo build --locked
+xvfb-run -a python3 scripts/smoke-clipboard-x11.py
+```
+
+The workflow test requires Xvfb, xterm, xdotool, and ImageMagick for failure
+screenshots. Xterm has a test-specific Ctrl+C copy binding. The test uses actual
+keyboard input, clipboard ownership, clipboard data, and the launcher UI.

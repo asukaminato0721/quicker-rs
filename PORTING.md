@@ -135,13 +135,33 @@ establish completion of the port.
   subprograms, clipboard-change waits, and process window activation.
   Preservation passes do not establish execution compatibility.
 
+## Step 7: Execute clipboard waits and selected-text reads (2026-10-06)
+
+- Added XFixes clipboard monitoring with X server timestamps. It detects repeated
+  ownership events and distinguishes CLIPBOARD from PRIMARY without storing contents.
+- Added `sys:waitClipboardChange` with recent changes, pre-Ctrl+C sequence tracking,
+  fractional timeouts, failure outputs, and cancellation.
+- Added `sys:getSelectedText` with Unicode text, HTML, retries, trimming, and URL
+  encoding. A plain-text fallback only reads PRIMARY owned by the focused window.
+  This handles X11 applications that omit events for repeated copies.
+- The checker reports unsupported formats, UI Automation, action parameters,
+  wait-window monitoring, source URL output, and the X11 backend requirement.
+- Native tests: 96 passed, five opt-in tests ignored. Three X11 opt-in tests passed
+  separately. They cover clipboard events, rejection of another window's selection,
+  and cancellation during a wait. The real launcher workflow passed twice with
+  identical selected text. Clippy and Wasm checks passed, with preview dead-code
+  warnings. Python tests: 11 passed. Added the new X11 checks to CI.
+- The six real exports still pass preservation. The five Citavi workflows now
+  lack only subprogram and process-window activation runners. Other runtime
+  dependencies and option semantics still need validation.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
 1. Implement missing modules found in real downloads. Prioritize subprograms,
-   clipboard waits, and selected text. Use the reports for
+   process-window activation, and selected files. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument

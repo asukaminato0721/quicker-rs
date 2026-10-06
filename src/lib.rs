@@ -2,6 +2,8 @@ mod action;
 #[cfg(target_os = "linux")]
 mod activation;
 mod app;
+#[cfg(target_os = "linux")]
+mod clipboard_monitor;
 mod config;
 mod focus;
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,6 +110,10 @@ pub fn run_native() -> eframe::Result<()> {
         return Ok(());
     }
     // Capture before eframe creates and focuses the launcher's window.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = clipboard_monitor::snapshot() {
+        log::debug!("Clipboard monitoring is unavailable: {error}");
+    }
     let initial_focus = focus::detect_focused_process();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

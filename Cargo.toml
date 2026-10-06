@@ -49,7 +49,7 @@ tempfile = "3"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-xcb = "1.7.0"
+xcb = { version = "1.7.0", features = ["xfixes"] }
 dbus = "0.9"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

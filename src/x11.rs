@@ -128,6 +128,48 @@ pub fn focused_process() -> Option<FocusedProcess> {
     })
 }
 
+/// Read PRIMARY only when its owner belongs to the focused application window.
+/// A previous selection in another application is not the current selection.
+pub fn focused_selection_text() -> Result<Option<String>, String> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    if is_wayland() {
+        return Err("Focused selection access requires an X11 session".into());
+    }
+    let Some(target) = focused_process() else {
+        return Ok(None);
+    };
+    let window = x::Window::new(
+        target
+            .window_id
+            .parse()
+            .map_err(|_| "Invalid focused window")?,
+    );
+    let desktop = Desktop::connect()?;
+    let owner = || {
+        desktop
+            .conn
+            .wait_for_reply(desktop.conn.send_request(&x::GetSelectionOwner {
+                selection: x::ATOM_PRIMARY,
+            }))
+            .map(|r| r.owner())
+            .map_err(|e| e.to_string())
+    };
+    let before = owner()?;
+    if !desktop.belongs_to(before, window) {
+        return Ok(None);
+    }
+    let text = arboard::Clipboard::new()
+        .map_err(|e| e.to_string())?
+        .get()
+        .clipboard(LinuxClipboardKind::Primary)
+        .text()
+        .map_err(|e| e.to_string())?;
+    if owner()? != before || !desktop.belongs_to(desktop.focus()?, window) {
+        return Err("The focused selection changed during the read".into());
+    }
+    Ok(Some(text))
+}
+
 pub fn restore_focus(
     target: &FocusedProcess,
     control: &ActionExecutionControl,
@@ -190,4 +232,70 @@ pub fn restore_focus(
         std::thread::sleep(Duration::from_millis(15));
     }
     Err("The desktop did not focus the target application; no keys were sent".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an isolated X11 display"]
+    fn focused_selection_rejects_primary_owned_by_another_window() {
+        let desktop = Desktop::connect().unwrap();
+        let focused = desktop.conn.generate_id();
+        let foreign = desktop.conn.generate_id();
+        for window in [focused, foreign] {
+            desktop
+                .conn
+                .send_and_check_request(&x::CreateWindow {
+                    depth: 0,
+                    wid: window,
+                    parent: desktop.root,
+                    x: 0,
+                    y: 0,
+                    width: 30,
+                    height: 30,
+                    border_width: 0,
+                    class: x::WindowClass::InputOutput,
+                    visual: x::COPY_FROM_PARENT,
+                    value_list: &[],
+                })
+                .unwrap();
+            desktop
+                .conn
+                .send_and_check_request(&x::ChangeProperty {
+                    mode: x::PropMode::Replace,
+                    window,
+                    property: x::ATOM_WM_CLASS,
+                    r#type: x::ATOM_STRING,
+                    data: b"selection-test\0SelectionTest\0",
+                })
+                .unwrap();
+            desktop
+                .conn
+                .send_and_check_request(&x::MapWindow { window })
+                .unwrap();
+        }
+        desktop
+            .conn
+            .send_and_check_request(&x::SetInputFocus {
+                revert_to: x::InputFocus::Parent,
+                focus: focused,
+                time: x::CURRENT_TIME,
+            })
+            .unwrap();
+        desktop
+            .conn
+            .send_and_check_request(&x::SetSelectionOwner {
+                owner: foreign,
+                selection: x::ATOM_PRIMARY,
+                time: x::CURRENT_TIME,
+            })
+            .unwrap();
+        assert_eq!(
+            focused_process().unwrap().window_id,
+            focused.resource_id().to_string()
+        );
+        assert_eq!(focused_selection_text().unwrap(), None);
+    }
 }

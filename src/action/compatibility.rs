@@ -244,6 +244,7 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
         "sys:readFile" => Some(("type", &["image"], "")),
         "sys:fileOperation" => Some(("type", &["deleteFile"], "")),
         "sys:outputText" => Some(("method", &["paste"], "paste")),
+        "sys:getSelectedText" => Some(("format", &["UnicodeText", "Html"], "UnicodeText")),
         _ => None,
     };
     if let Some((key, allowed, default)) = option {
@@ -267,7 +268,10 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             }
         }
     }
-    if matches!(runner, "sys:keyInput" | "sys:outputText") {
+    if matches!(
+        runner,
+        "sys:keyInput" | "sys:outputText" | "sys:getSelectedText"
+    ) {
         issue(
             issues,
             path,
@@ -277,6 +281,40 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
     }
     if runner == "sys:reportProgress" {
         issue(issues, path, "progress_reporting_is_noop", "warning");
+    }
+    if matches!(runner, "sys:waitClipboardChange" | "sys:getSelectedText") {
+        issue(issues, path, "requires_x11_clipboard_events", "warning");
+        let keys: &[&str] = if runner == "sys:waitClipboardChange" {
+            &["monitorWaitWin"]
+        } else {
+            &["tryNoClipboard", "useActionParam"]
+        };
+        for key in keys {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.contains('{') || s.starts_with("$="))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if truthy(Some(&binding["Value"])) {
+                issue(issues, &option_path, "unsupported_option", "blocker");
+            }
+        }
+        if runner == "sys:getSelectedText" && step["OutputParams"]["url"].is_string() {
+            issue(
+                issues,
+                path,
+                "clipboard_source_url_not_available",
+                "warning",
+            );
+        }
     }
     if runner == "sys:each" {
         let binding = &step["InputParams"]["useMultiThread"];
