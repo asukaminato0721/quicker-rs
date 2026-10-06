@@ -17,10 +17,7 @@ use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-))]
+#[cfg(target_os = "linux")]
 use arboard::{GetExtLinux, LinuxClipboardKind};
 #[cfg(test)]
 use std::cell::RefCell;
@@ -3065,10 +3062,7 @@ fn read_clipboard_text() -> Result<String, String> {
         return Ok(text);
     }
 
-    #[cfg(all(
-        unix,
-        not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-    ))]
+    #[cfg(target_os = "linux")]
     {
         if let Some(text) = read_primary_clipboard_text(&mut clipboard) {
             return Ok(text);
@@ -3096,11 +3090,7 @@ fn read_standard_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<St
     normalize_clipboard_text(clipboard.get_text().ok())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(all(
-    unix,
-    not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))
-))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 fn read_primary_clipboard_text(clipboard: &mut arboard::Clipboard) -> Option<String> {
     #[cfg(test)]
     if let Some(text) = test_read_primary_clipboard_text() {
@@ -3953,7 +3943,102 @@ fn run_shell_command(
     ExecResult::Err("Shell execution is unavailable in the web preview".into())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(target_os = "windows", test))]
+fn escape_windows_send_keys_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' if matches!(chars.peek(), Some('\n')) => {}
+            '\r' | '\n' => escaped.push_str("{ENTER}"),
+            '\t' => escaped.push_str("{TAB}"),
+            '+' | '^' | '%' | '~' | '(' | ')' | '[' | ']' => {
+                escaped.push('{');
+                escaped.push(ch);
+                escaped.push('}');
+            }
+            '{' => escaped.push_str("{{}"),
+            '}' => escaped.push_str("{}}"),
+            _ => escaped.push(ch),
+        }
+    }
+
+    escaped
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_send_keys_modifier_token(modifier: &str) -> Result<&'static str, String> {
+    match modifier.trim().to_ascii_lowercase().as_str() {
+        "shift" => Ok("+"),
+        "ctrl" | "control" => Ok("^"),
+        "alt" => Ok("%"),
+        "super" | "win" | "meta" => {
+            Err("Windows SendKeys does not support the Super/Windows modifier".into())
+        }
+        other => Err(format!("Unsupported key modifier on Windows: {other}")),
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_send_keys_key_token(key: &str) -> Result<String, String> {
+    match key.trim() {
+        "Return" | "Enter" => Ok("{ENTER}".into()),
+        "Escape" | "Esc" => Ok("{ESC}".into()),
+        "Tab" => Ok("{TAB}".into()),
+        "Left" => Ok("{LEFT}".into()),
+        "Up" => Ok("{UP}".into()),
+        "Right" => Ok("{RIGHT}".into()),
+        "Down" => Ok("{DOWN}".into()),
+        "Space" | "space" => Ok("{SPACE}".into()),
+        "BackSpace" | "Backspace" | "Back" => Ok("{BACKSPACE}".into()),
+        trimmed => {
+            let mut chars = trimmed.chars();
+            match (chars.next(), chars.next()) {
+                (Some(ch), None) => {
+                    let normalized = if ch.is_ascii_alphabetic() {
+                        ch.to_ascii_lowercase().to_string()
+                    } else {
+                        ch.to_string()
+                    };
+                    Ok(escape_windows_send_keys_text(&normalized))
+                }
+                _ => Err(format!("Unsupported key on Windows SendKeys backend: {trimmed}")),
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_send_keys_sequence(modifiers: &[String], key: &str) -> Result<String, String> {
+    let mut sequence = String::new();
+    for modifier in modifiers {
+        sequence.push_str(windows_send_keys_modifier_token(modifier)?);
+    }
+    sequence.push_str(&windows_send_keys_key_token(key)?);
+    Ok(sequence)
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_send_keys(sequence: &str, context: &str) -> Result<(), String> {
+    let status = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-Command")
+        .arg(format!(
+            "$wshell = New-Object -ComObject WScript.Shell; $wshell.SendKeys('{}')",
+            ps_single_quote(sequence)
+        ))
+        .status()
+        .map_err(|err| format!("Failed to invoke Windows SendKeys: {err}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{context} exited with {status}"))
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_send_key_combo(modifiers, key) {
@@ -3983,12 +4068,38 @@ fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
         })
 }
 
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_send_key_combo(modifiers, key) {
+        return result;
+    }
+
+    let sequence = windows_send_keys_sequence(modifiers, key)?;
+    run_windows_send_keys(&sequence, "Windows SendKeys key command")
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "linux"),
+    not(target_os = "windows")
+))]
+fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_send_key_combo(modifiers, key) {
+        return result;
+    }
+
+    let _ = (modifiers, key);
+    Err("Quicker key automation is currently only implemented on Linux and Windows".into())
+}
+
 #[cfg(target_arch = "wasm32")]
 fn send_key_combo(_modifiers: &[String], _key: &str) -> Result<(), String> {
     Err("Key automation is unavailable in the web preview".into())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
 fn type_input_text(text: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_type_input_text(text) {
@@ -4013,6 +4124,32 @@ fn type_input_text(text: &str) -> Result<(), String> {
                 Err(format!("xdotool exited with {status}"))
             }
         })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+fn type_input_text(text: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_type_input_text(text) {
+        return result;
+    }
+
+    let sequence = escape_windows_send_keys_text(text);
+    run_windows_send_keys(&sequence, "Windows SendKeys text command")
+}
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_os = "linux"),
+    not(target_os = "windows")
+))]
+fn type_input_text(text: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(result) = test_type_input_text(text) {
+        return result;
+    }
+
+    let _ = text;
+    Err("Quicker text automation is currently only implemented on Linux and Windows".into())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -4209,7 +4346,7 @@ fn test_read_standard_clipboard_text() -> Option<Option<String>> {
     with_action_test_runtime(|runtime| runtime.standard_clipboard_reads.pop_front())
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn test_read_primary_clipboard_text() -> Option<Option<String>> {
     with_action_test_runtime(|runtime| runtime.primary_clipboard_reads.pop_front())
 }
@@ -4967,6 +5104,31 @@ mod tests {
     }
 
     #[test]
+    fn windows_send_keys_sequence_maps_common_shortcuts() {
+        assert_eq!(
+            windows_send_keys_sequence(&["ctrl".into()], "v").unwrap(),
+            "^v"
+        );
+        assert_eq!(
+            windows_send_keys_sequence(&["alt".into(), "shift".into()], "Return").unwrap(),
+            "%+{ENTER}"
+        );
+    }
+
+    #[test]
+    fn windows_send_keys_text_escapes_special_characters() {
+        assert_eq!(
+            escape_windows_send_keys_text("a+b^{x}\n"),
+            "a{+}b{^}{{}x{}}{ENTER}"
+        );
+    }
+
+    #[test]
+    fn windows_send_keys_sequence_rejects_super_modifier() {
+        assert!(windows_send_keys_sequence(&["super".into()], "c").is_err());
+    }
+
+    #[test]
     fn search_clipboard_text_builds_query_url() {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
@@ -5103,12 +5265,23 @@ mod tests {
 
         let result = action(ActionKind::RunClipboardText { shell: "sh".into() }).execute();
 
-        assert_eq!(result, ExecResult::OkWithMessage("selected".into()));
         with_action_test_runtime(|runtime| {
-            assert_eq!(
-                runtime.shell_calls,
-                vec![("sh".into(), "echo selected".into())]
-            );
+            if cfg!(target_os = "linux") {
+                assert_eq!(result, ExecResult::OkWithMessage("selected".into()));
+                assert_eq!(
+                    runtime.shell_calls,
+                    vec![("sh".into(), "echo selected".into())]
+                );
+            } else {
+                assert_eq!(
+                    result,
+                    ExecResult::Err(
+                        "No usable text was found in the clipboard. On Linux, select text first or copy it explicitly."
+                            .into()
+                    )
+                );
+                assert!(runtime.shell_calls.is_empty());
+            }
         });
     }
 
