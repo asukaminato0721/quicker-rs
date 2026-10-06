@@ -580,21 +580,11 @@ impl QuickerApp {
                             ui.horizontal(|ui| {
                                 ui.label("Method:");
                                 egui::ComboBox::from_id_salt(("string_process", index))
-                                    .selected_text(match method {
-                                        LowCodeStringProcessMethod::ToLower => "toLower",
-                                        LowCodeStringProcessMethod::UrlEncode => "urlEncode",
-                                    })
+                                    .selected_text(method.key())
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            method,
-                                            LowCodeStringProcessMethod::ToLower,
-                                            "toLower",
-                                        );
-                                        ui.selectable_value(
-                                            method,
-                                            LowCodeStringProcessMethod::UrlEncode,
-                                            "urlEncode",
-                                        );
+                                        for option in LowCodeStringProcessMethod::ALL {
+                                            ui.selectable_value(method, option, option.key());
+                                        }
                                     });
                             });
                             ui.label("Output variable:");

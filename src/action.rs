@@ -5,10 +5,12 @@ mod expression;
 mod file_selection;
 mod key_steps;
 mod preservation;
+mod regex_steps;
 mod run_steps;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
+mod string_process;
 mod subprogram;
 mod text_steps;
 mod window_steps;
@@ -284,7 +286,33 @@ pub enum LowCodeWriteClipboardKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LowCodeStringProcessMethod {
     ToLower,
+    ToUpper,
+    Trim,
+    TrimStart,
+    TrimEnd,
     UrlEncode,
+}
+
+impl LowCodeStringProcessMethod {
+    pub const ALL: [Self; 6] = [
+        Self::ToLower,
+        Self::ToUpper,
+        Self::Trim,
+        Self::TrimStart,
+        Self::TrimEnd,
+        Self::UrlEncode,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ToLower => "toLower",
+            Self::ToUpper => "toUpper",
+            Self::Trim => "trim",
+            Self::TrimStart => "trimStart",
+            Self::TrimEnd => "trimEnd",
+            Self::UrlEncode => "urlEncode",
+        }
+    }
 }
 
 fn default_shell() -> String {
@@ -1137,16 +1165,7 @@ impl LowCodePluginStep {
                 track_variable_name(variable_names, output);
                 Ok(step_document(
                     "sys:stringProcess",
-                    map_with_binding([
-                        ("data", input.as_str()),
-                        (
-                            "method",
-                            match method {
-                                LowCodeStringProcessMethod::ToLower => "toLower",
-                                LowCodeStringProcessMethod::UrlEncode => "urlEncode",
-                            },
-                        ),
-                    ]),
+                    map_with_binding([("data", input.as_str()), ("method", method.key())]),
                     map_with_output([("output", output.as_str()), ("isSuccess", "")]),
                 ))
             }
@@ -1728,22 +1747,35 @@ fn low_code_step_from_document(
                 .unwrap_or_default(),
             alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
         }),
-        "sys:regexExtract" => Ok(LowCodePluginStep::RegexExtract {
-            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-            pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
-            output: output_var_name(&step.output_params, "match1")
-                .or_else(|| output_var_name(&step.output_params, "output"))
-                .or_else(|| output_var_name(&step.output_params, "matches"))
-                .unwrap_or_default(),
-        }),
-        "sys:stringProcess" => Ok(LowCodePluginStep::StringProcess {
-            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-            method: match binding_string(&step.input_params, "method").as_deref() {
-                Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
-                _ => LowCodeStringProcessMethod::ToLower,
-            },
-            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-        }),
+        "sys:regexExtract" => {
+            let mode = binding_string(&step.input_params, "getGroup").unwrap_or_else(|| "0".into());
+            let other_outputs = [
+                "matches", "match2", "match3", "match4", "match5", "matchObj", "matchesCollection",
+            ];
+            if !matches!(mode.as_str(), "0" | "false")
+                || other_outputs.iter().any(|key| output_var_name(&step.output_params, key).is_some())
+            {
+                return Err("Edit regex groups and multiple outputs in the JSON editor".into());
+            }
+            Ok(LowCodePluginStep::RegexExtract {
+                input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
+                output: output_var_name(&step.output_params, "match1")
+                    .or_else(|| output_var_name(&step.output_params, "output"))
+                    .unwrap_or_default(),
+            })
+        }
+        "sys:stringProcess" => {
+            let selected = binding_string(&step.input_params, "method").unwrap_or_default();
+            let method = LowCodeStringProcessMethod::ALL.into_iter()
+                .find(|m| m.key().eq_ignore_ascii_case(&selected))
+                .ok_or("This text operation requires the JSON editor")?;
+            Ok(LowCodePluginStep::StringProcess {
+                input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                method,
+                output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+            })
+        }
         "sys:splitString" => Ok(LowCodePluginStep::SplitString {
             input: binding_string(&step.input_params, "data").unwrap_or_default(),
             separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
@@ -2274,59 +2306,8 @@ impl QuickerRuntime {
                 }
                 Ok(StepFlow::Continue)
             }
-            Some(runner::StepRunner::RegexExtract) => {
-                let input = self.input_string(&step.input_params, "data")?;
-                let pattern = self.input_string(&step.input_params, "pattern")?;
-                let get_group = self
-                    .input_string_opt(&step.input_params, "getGroup")?
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(0);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
-                let regex = compile_step_regex(
-                    &pattern,
-                    self.input_bool(&step.input_params, "ignoreCase")?,
-                    self.input_bool(&step.input_params, "singleLine")?,
-                    self.input_bool(&step.input_params, "multiLine")?,
-                )?;
-
-                let captures = regex
-                    .captures(&input)
-                    .map_err(|err| format!("Regex failed: {err}"))?;
-
-                match captures {
-                    Some(captures) => {
-                        let matched = captures
-                            .get(get_group)
-                            .map(|capture| capture.as_str().to_string())
-                            .unwrap_or_default();
-                        self.assign_regex_outputs(&step.output_params, &matched)?;
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
-                        Ok(StepFlow::Continue)
-                    }
-                    None => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
-                        if stop_if_fail {
-                            Err(format!("Regex did not match pattern: {pattern}"))
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
-            Some(runner::StepRunner::StringProcess) => {
-                let input = self.input_string(&step.input_params, "data")?;
-                let method = self
-                    .input_string_opt(&step.input_params, "method")?
-                    .unwrap_or_default();
-                let output = match method.as_str() {
-                    "toLower" => input.to_lowercase(),
-                    "urlEncode" => urlencoding::encode(&input).into_owned(),
-                    other => return Err(format!("Unsupported stringProcess method: {other}")),
-                };
-                self.assign_output(&step.output_params, "output", Value::String(output))?;
-                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
-                Ok(StepFlow::Continue)
-            }
+            Some(runner::StepRunner::RegexExtract) => self.run_regex_extract(step),
+            Some(runner::StepRunner::StringProcess) => self.run_string_process(step),
             Some(runner::StepRunner::Download) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 let save_path = self.input_string(&step.input_params, "savePath")?;
@@ -2662,17 +2643,6 @@ impl QuickerRuntime {
         let value = expression::convert(value, self.variable_types.get(&name).copied())
             .map_err(|err| format!("Output {key} to variable {name}: {err}"))?;
         self.vars.insert(name, value);
-        Ok(())
-    }
-
-    fn assign_regex_outputs(
-        &mut self,
-        params: &Map<String, Value>,
-        matched: &str,
-    ) -> Result<(), String> {
-        for candidate in ["match1", "matches", "output"] {
-            self.assign_output(params, candidate, Value::String(matched.to_string()))?;
-        }
         Ok(())
     }
 }

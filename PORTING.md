@@ -295,6 +295,26 @@ establish completion of the port.
 - The original QuickLook report now has one blocker: its Windows executable.
   Native Wayland, remote file selections, and setting selections remain gaps.
 
+## Step 15: Correct real plugin text extraction (2026-10-07)
+
+- Found a semantic error in the downloaded `xID->CITAVI` workflow. The prototype
+  treated the extraction mode as a capture index and never wrote its second
+  group. Its required `trim` operation was also unsupported.
+- Verified modes, legacy aliases, missing-group values, and outputs against the
+  MSI and official docs. Implemented all-match values, first-match groups, and
+  per-group lists, including trailing-space output keys and .NET group ordering.
+- Added output clearing, failure policy, cancellation checks, size limits, and
+  static diagnostics. Right-to-left matching and native .NET objects remain
+  unsupported. Regex engine syntax and timeout semantics can differ from .NET.
+- Added trim variants and uppercase conversion to runtime and editor. Unsupported
+  text methods retain JSON. Group extraction uses JSON cards to keep all outputs.
+- The downloaded action's original text steps returned the expected name and ID.
+  GUI saving preserved its complete JSON, tags, and hotkey. Six downloaded exports
+  passed preservation. The full Citavi workflow still needs shared subprograms.
+- Native tests: 133 passed, nine opt-in tests ignored. Both corpus tests passed
+  separately. Python tests: 17 passed. Clippy and Wasm checks passed, with preview
+  dead-code warnings. The real action report now has two dependency blockers.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

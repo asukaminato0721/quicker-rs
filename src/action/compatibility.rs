@@ -311,6 +311,102 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:regexExtract" {
+        issue(
+            issues,
+            path,
+            "regex_engine_semantics_require_validation",
+            "warning",
+        );
+        for key in ["getGroup", "rightToLeft", "pattern"] {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || (key != "pattern" && s.contains('{')))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+                continue;
+            }
+            let value = value_to_string(&binding["Value"]);
+            if (key == "getGroup"
+                && !binding["Value"].is_null()
+                && regex_steps::mode(&value).is_err())
+                || (key == "rightToLeft" && truthy(Some(&binding["Value"])))
+            {
+                issue(issues, &option_path, "unsupported_option", "blocker");
+            } else if key == "pattern"
+                && !binding["Value"].is_null()
+                && regex_steps::compile(&value, false, false, false).is_err()
+            {
+                if value.contains('{') {
+                    issue(
+                        issues,
+                        &option_path,
+                        "dynamic_option_requires_validation",
+                        "warning",
+                    );
+                } else {
+                    issue(issues, &option_path, "unsupported_regex_pattern", "blocker");
+                }
+            }
+        }
+        if let Some(outputs) = step["OutputParams"].as_object() {
+            for key in ["matchObj", "matchesCollection"] {
+                if output_var_name(outputs, key).is_some() {
+                    issue(
+                        issues,
+                        &format!("{path}/OutputParams/{key}"),
+                        "dotnet_regex_object_not_supported",
+                        "blocker",
+                    );
+                }
+            }
+        }
+    }
+    if runner == "sys:stringProcess" {
+        let method = step["InputParams"]["method"]["Value"]
+            .as_str()
+            .unwrap_or_default();
+        if method.eq_ignore_ascii_case("urlEncode") {
+            let binding = &step["InputParams"]["srcEncoding"];
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !binding["Value"].is_null()
+                && !matches!(
+                    value_to_string(&binding["Value"])
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "" | "utf8" | "utf-8"
+                )
+            {
+                issue(issues, path, "unsupported_text_encoding", "blocker");
+            }
+        }
+        if method.eq_ignore_ascii_case("toLower") || method.eq_ignore_ascii_case("toUpper") {
+            issue(
+                issues,
+                path,
+                "unicode_case_mapping_can_differ_from_dotnet_culture",
+                "warning",
+            );
+        }
+    }
     if runner == "sys:getSelectedFiles" {
         issue(
             issues,
@@ -552,7 +648,7 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             "get_key_state",
         )),
         "sys:stop" => Some(("method", &["default", "forcestop"], "default")),
-        "sys:stringProcess" => Some(("method", &["toLower", "urlEncode"], "")),
+        "sys:stringProcess" => Some(("method", string_process::METHODS, "")),
         "sys:stateStorage" => Some(("type", &["readActionState", "saveActionState"], "")),
         "sys:readFile" => Some(("type", &["image"], "")),
         "sys:fileOperation" => Some(("type", &["deleteFile"], "")),
@@ -577,7 +673,7 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             );
         } else {
             let literal = binding["Value"].as_str().unwrap_or(default);
-            let supported = if runner == "sys:outputText" {
+            let supported = if matches!(runner, "sys:outputText" | "sys:stringProcess") {
                 allowed.iter().any(|v| v.eq_ignore_ascii_case(literal))
             } else {
                 allowed.contains(&literal)
@@ -730,7 +826,7 @@ mod tests {
     fn checks_subprograms_and_unsupported_options() {
         let input = json!({"ActionType": 24, "Title": "Test", "Data": json!({
             "SubPrograms": [{"Steps": [{"StepRunnerKey": "sys:run"}]}],
-            "Steps": [{"StepRunnerKey": "sys:stringProcess", "InputParams": {"method": {"Value": "toUpper"}}}]
+            "Steps": [{"StepRunnerKey": "sys:stringProcess", "InputParams": {"method": {"Value": "futureMethod"}}}]
         }).to_string()}).to_string();
         let report = inspect(&input);
         let issues = report["runtime"]["issues"].as_array().unwrap();
@@ -865,6 +961,57 @@ mod tests {
             .iter()
             .any(|i| i["code"] == "dynamic_option_requires_validation"));
         assert_eq!(dynamic["runtime"]["executed"], false);
+    }
+
+    #[test]
+    fn regex_reports_modes_patterns_objects_and_text_options() {
+        let report = |params: Value, outputs: Value| {
+            inspect(&workflow(json!([
+                {"StepRunnerKey":"sys:regexExtract", "InputParams":params, "OutputParams":outputs}
+            ])))
+        };
+        for mode in ["0", "1", "2", "true", "false"] {
+            assert_eq!(
+                exit_code(&report(
+                    json!({"getGroup":{"Value":mode}, "pattern":{"Value":"(a)(b)"}}),
+                    json!({})
+                )),
+                0
+            );
+        }
+        for params in [
+            json!({"getGroup":{"Value":"3"}}),
+            json!({"rightToLeft":{"Value":"1"}}),
+            json!({"pattern":{"Value":"("}}),
+        ] {
+            assert_eq!(exit_code(&report(params, json!({}))), 1);
+        }
+        assert_eq!(
+            exit_code(&report(json!({}), json!({"matchObj ":"object"}))),
+            1
+        );
+        assert_eq!(
+            exit_code(&report(
+                json!({"pattern":{"VarKey":"pattern"}}),
+                json!({"matchObj":null})
+            )),
+            0
+        );
+        assert_eq!(report(json!({}), json!({}))["runtime"]["executed"], false);
+        for method in string_process::METHODS {
+            assert_eq!(
+                exit_code(&inspect(&workflow(json!([
+                    {"StepRunnerKey":"sys:stringProcess", "InputParams":{"method":{"Value":method}}}
+                ])))),
+                0
+            );
+        }
+        assert_eq!(
+            exit_code(&inspect(&workflow(json!([
+                {"StepRunnerKey":"sys:stringProcess", "InputParams":{"method":{"Value":"urlEncode"}, "srcEncoding":{"Value":"gbk"}}}
+            ])))),
+            1
+        );
     }
 
     #[test]

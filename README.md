@@ -124,6 +124,21 @@ error. The evaluator does not provide arbitrary C# code or .NET host APIs.
 It uses ordinal string matching. Case-insensitive ordinal matching currently
 requires ASCII text. Reports check expression syntax, but runtime types still need validation.
 
+`sys:regexExtract` supports all-match values, the first match's groups, and
+per-group lists. It returns `matches` and `match1` through `match5`, including
+the trailing-space keys used by Quicker exports. Optional groups produce empty
+strings. Failed extraction clears the outputs. Right-to-left matching and native .NET
+match objects remain unsupported. Regex syntax, Unicode classes, and culture
+rules can differ from .NET. Limits are 64 KiB per pattern, 16 MiB of input and
+extracted text, and 100,000 matches. The engine also limits backtracking.
+Cancellation is checked between match searches. The .NET three-second timeout
+is not reproduced. Group extraction uses the JSON editor to retain all outputs.
+
+`sys:stringProcess` supports `trim`, `trimStart`, `trimEnd`, `toLower`, `toUpper`,
+and UTF-8 `urlEncode`. These methods are available in the action editor.
+Unsupported methods retain their JSON instead of becoming lowercase operations.
+Both text modules report success and errors and honor `stopIfFail`.
+
 Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:each`,
 `sys:break`, and `sys:continue`. Nested loops handle break, continue, stop, and
 cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.

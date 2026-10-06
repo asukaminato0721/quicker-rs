@@ -286,3 +286,51 @@ Native tests passed 126 cases with eight opt-in tests excluded. Clippy passed
 with warnings denied. The Wasm check passed with preview dead-code warnings.
 All six downloaded exports passed preservation again. The ID download interface
 also fetched the pinned public `Ref->Ob` export again and verified its hash.
+
+## Regex extraction and text processing evidence
+
+The downloaded `xID->CITAVI` export contains `trim` and a two-group regex.
+Its SHA-256 is `13b30098483bc737e0ac5afddd166562b1d6dabd8150f00f7a93e92293918a6b`.
+The prototype interpreted `getGroup=1` as a group index. It assigned only one
+result and never wrote the second group. This lost the Citavi item ID.
+
+The MSI `RegexExtractStep.Execute` at RVA `0x2d7508` calls `0x404624`.
+The body selects modes `0`, `1`, and `2`, and accepts legacy `false` and `true`.
+Mode 1 excludes the complete match from the group list. The helper at `0x2d758c`
+builds a list for each group in mode 2 and inserts empty strings for missing
+captures. The [official module reference](https://docs.getquicker.net/v2/xaction/modules/regexextract/)
+agrees with these output shapes. Numbered outputs also accept trailing spaces
+in their keys, as the downloaded export requires.
+
+The MSI `StringProcessStep.Execute` at RVA `0x2b7b64` calls `0x3ee16c`.
+It dispatches using uppercase method names and handles UTF-8 URL encoding
+separately from other encodings. The [text processing reference](https://docs.getquicker.net/v2/xaction/modules/stringprocess/)
+describes the whitespace and case operations. The Linux runtime now handles
+trim variants and uppercase conversion, alongside lowercase and UTF-8 URL
+encoding. Other encodings fail explicitly. Unsupported methods remain JSON
+cards in the editor instead of appearing as lowercase conversion.
+
+```sh
+QUICKER_COMPAT_CORPUS=/path/to/downloads cargo test downloaded_citavi_text -- --ignored
+xvfb-run -a python3 scripts/smoke-plugin-editor-x11.py /path/to/citavi-1.json
+```
+
+Both checks passed on 2026-10-07. The first extracts the original trim and regex
+steps from the downloaded action. It supplies a controlled Citavi reference and
+checks that the name and full ID reach separate variables. This tests the text
+pipeline only. It does not run Citavi or the unavailable shared subprograms.
+The second saves the full imported action through the GUI and checks exact JSON,
+tags, and hotkey preservation.
+
+Unit tests cover all three extraction modes, optional and missing groups, named
+group order, zero-length matches, flags, malformed patterns, size limits, output
+clearing, and cancellation. They also cover Unicode whitespace and editor method
+preservation. Native tests passed 133 cases with nine opt-in tests excluded.
+Python tests passed 17 cases. Clippy and Wasm checks passed, with preview dead-code
+warnings. All six downloaded exports passed preservation again. The `xID->CITAVI`
+report now lists only its two unresolved shared-subprogram call sites as blockers.
+
+The regex engine is not .NET. The runtime rejects right-to-left matching and
+.NET object outputs. It reports engine differences and applies documented memory,
+match-count, and backtracking limits. It does not reproduce .NET's three-second
+match timeout or every syntax and Unicode rule.
