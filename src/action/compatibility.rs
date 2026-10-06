@@ -721,13 +721,69 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
         "sys:stop" => Some(("method", &["default", "forcestop"], "default")),
         "sys:stringProcess" => Some(("method", string_process::METHODS, "")),
         "sys:stateStorage" => Some(("type", &["readActionState", "saveActionState"], "")),
-        "sys:readFile" => Some(("type", &["image"], "")),
+        "sys:readFile" => Some(("type", &["text", "image"], "text")),
         "sys:fileOperation" => Some(("type", &["deleteFile"], "")),
         "sys:outputText" => Some(("method", &["paste", "input"], "paste")),
         "sys:getSelectedText" => Some(("format", &["UnicodeText", "Html"], "UnicodeText")),
         "sys:getSelectedFiles" => Some(("operation", &["getSelection"], "getSelection")),
         _ => None,
     };
+    if runner == "sys:WriteTextFile"
+        || (runner == "sys:readFile" && step["InputParams"]["type"]["Value"] != "image")
+    {
+        for key in ["encoding", "newLineChars"] {
+            if key == "newLineChars" && runner != "sys:WriteTextFile" {
+                continue;
+            }
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|v| v.contains('{') || v.starts_with("$="))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if let Some(value) = binding["Value"].as_str() {
+                if !super::file_steps::validate_option(key, value) {
+                    issue(
+                        issues,
+                        &option_path,
+                        "unsupported_text_file_option",
+                        "blocker",
+                    );
+                }
+            }
+        }
+        issue(
+            issues,
+            path,
+            "text_file_requires_native_path_and_valid_encoding",
+            "warning",
+        );
+        let key = if runner == "sys:WriteTextFile" {
+            "filePath"
+        } else {
+            "path"
+        };
+        let binding = &step["InputParams"][key];
+        if !binding["VarKey"].is_string()
+            && binding["Value"]
+                .as_str()
+                .is_some_and(|v| !v.starts_with("$=") && super::file_steps::windows_path(v))
+        {
+            issue(
+                issues,
+                &format!("{path}/InputParams/{key}"),
+                "windows_file_path_requires_linux_replacement",
+                "blocker",
+            );
+        }
+    }
     if let Some((key, allowed, default)) = option {
         let binding = &step["InputParams"][key];
         let option_path = format!("{path}/InputParams/{key}");

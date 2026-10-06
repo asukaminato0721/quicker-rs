@@ -4,6 +4,7 @@ mod control_flow;
 mod dialogs;
 mod expression;
 mod file_selection;
+mod file_steps;
 mod key_steps;
 mod preservation;
 mod regex_steps;
@@ -2305,39 +2306,8 @@ impl QuickerRuntime {
                     }
                 }
             }
-            Some(runner::StepRunner::ReadFile) => {
-                let path = normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
-                let file_type = self
-                    .input_string_opt(&step.input_params, "type")?
-                    .unwrap_or_default();
-                match file_type.as_str() {
-                    "image" => match read_file_path_reference(&path) {
-                        Ok(value) => {
-                            self.assign_output(&step.output_params, "image", Value::String(value))?;
-                            self.assign_output(
-                                &step.output_params,
-                                "isSuccess",
-                                Value::Bool(true),
-                            )?;
-                            Ok(StepFlow::Continue)
-                        }
-                        Err(err) => {
-                            self.assign_output(
-                                &step.output_params,
-                                "isSuccess",
-                                Value::Bool(false),
-                            )?;
-                            if stop_if_fail {
-                                Err(err)
-                            } else {
-                                Ok(StepFlow::Continue)
-                            }
-                        }
-                    },
-                    other => Err(format!("Unsupported readFile type: {other}")),
-                }
-            }
+            Some(runner::StepRunner::ReadFile) => self.run_read_file(step),
+            Some(runner::StepRunner::WriteTextFile) => self.run_write_text_file(step),
             Some(runner::StepRunner::Imageinfo) => {
                 let path =
                     normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);

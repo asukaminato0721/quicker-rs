@@ -373,3 +373,32 @@ Its local action ID is `14c751d1-1c05-4e21-9b82-128b35413d45`; it has no
 Use `--file` after downloading the pinned export. All four import/preservation
 checks passed. The report blocks its `SelectSingleFolder` input tool, script/file
 modules, and unsupported expressions. The complete OpenCC workflow was not run.
+
+### OpenCC text file execution
+
+The opt-in `downloaded_opencc_file_steps_read_and_write_native_paths` test loads
+the pinned `opencc.json` from `QUICKER_COMPAT_CORPUS`. It executes ten original
+file steps with temporary native paths in the existing variables. It checks
+UTF-8 content, Unicode variable names, file outputs, and preserved newlines.
+Two other file steps contain Windows path templates and must return errors.
+The test does not execute the OpenCC program or the complete action.
+
+```sh
+QUICKER_COMPAT_CORPUS=/path/to/json cargo test --locked downloaded_ -- --ignored --nocapture
+```
+
+The MSI references are `ReadFileStep.Execute` at `0x2fcc7c`, its closure at
+`0x4185d8`, `WriteTextFileStep.Execute` at `0x2fdf8c`, its closure at `0x419530`,
+the overwrite helper at `0x2fe000`, and `NormalizeNewlines` at `0x2fe11c`.
+The official [read-file documentation](https://docs.getquicker.net/v2/xaction/modules/readfile/)
+and [write-text documentation](https://docs.getquicker.net/v2/xaction/modules/writetextfile/)
+describe the input and output parameters. Tests cover exact UTF-8/16/32 bytes,
+BOM handling, append, overwrite, CRLF defaults, newline conversion, the `.ps1`
+BOM exception, failure outputs, cancellation, size limits, and special files.
+
+The implementation rejects malformed text instead of using .NET replacement
+fallback. Automatic encoding detection, Windows default code pages, and legacy
+encodings remain gaps. Reads expand process environment variables. Windows path
+normalization and zero-width character removal are not reproduced. Local text
+paths retain their whitespace. Writes can be partial after cancellation or an
+I/O error. Reports describe these limits and never claim full action execution.

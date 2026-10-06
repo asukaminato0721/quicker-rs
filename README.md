@@ -139,6 +139,22 @@ and UTF-8 `urlEncode`. These methods are available in the action editor.
 Unsupported methods retain their JSON instead of becoming lowercase operations.
 Both text modules report success and errors and honor `stopIfFail`.
 
+`sys:readFile` reads text as UTF-8 by default. `sys:WriteTextFile` creates parent
+directories and supports overwrite, append, BOMs, and newline conversion.
+Both modules support UTF-8, UTF-16, UTF-32, and ASCII. Unicode BOMs override the
+selected read encoding. Writes use CRLF when `addNewLine` is true and no newline
+format is selected. UTF-8 PowerShell files retain a BOM, as in the MSI.
+Failed operations set `isSuccess=false`. Missing `stopIfFail` defaults to true.
+
+Text files require native paths and regular files. Paths retain whitespace.
+Backslashes and Windows drive paths require replacement on Linux. Reads expand
+`%NAME%` from the process environment. Windows default code pages, automatic
+encoding detection, UTF-7, and legacy encodings remain unsupported.
+Invalid input bytes and non-ASCII text in ASCII writes produce errors instead
+of replacement characters. Text and encoded files have a 16 MiB limit.
+Cancellation is checked between 64 KiB transfers. Interrupted writes can leave
+partial content. The web preview cannot read or write local text files.
+
 `sys:MsgBox` supports standard OK, OK/Cancel, Yes/No, and Yes/No/Cancel buttons.
 It returns the selected `result` and `okOrYes`. Custom message boxes remain
 unsupported. Dialog appearance and icons depend on kdialog or zenity.

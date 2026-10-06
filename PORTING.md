@@ -339,6 +339,30 @@ establish completion of the port.
   passed preservation. Both corpus checks and 17 Python tests passed. Clippy
   and Wasm checks passed. CI includes both GUI checks but has not run remotely.
 
+## Step 17: Execute text file modules from the OpenCC export (2026-10-07)
+
+- Checked `ReadFileStep` and `WriteTextFileStep` in the MSI, including the
+  execution closures, overwrite helper, and newline normalization method.
+- Added text reads and `sys:WriteTextFile`. Implemented Unicode encodings,
+  ASCII, BOM detection, parent directory creation, overwrite, append, newline
+  conversion, and the UTF-8 PowerShell BOM exception. Failure stops execution
+  by default. A suppressed failure returns `isSuccess=false`.
+- Limited text operations to regular files and 16 MiB. Checked cancellation
+  between transfers. Kept native path whitespace. Added explicit errors for
+  Windows paths, unsupported encodings, invalid bytes, and ASCII data loss.
+  This strict encoding behavior differs from .NET replacement fallback.
+  Cancellation or I/O failure can leave partial writes.
+- Executed ten unchanged file steps from the downloaded OpenCC JSON with native
+  path variables. Verified Unicode content and file outputs. Two steps with
+  Windows path templates correctly failed. This test does not execute the full
+  OpenCC workflow or its external Windows commands.
+- Seven downloaded exports passed preservation. All three corpus tests passed.
+  Native tests: 145 passed, ten opt-in tests ignored. Python tests: 17 passed.
+  Clippy passed with warnings denied. Wasm compiled with preview dead-code
+  warnings. Repeated the ID download with dependency checks: the public
+  `Ref->Ob` export downloaded and passed preservation. Its official dependency
+  returned HTTP 401 and remains a reported runtime blocker.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
