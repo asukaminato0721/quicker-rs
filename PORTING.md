@@ -75,14 +75,28 @@ establish completion of the port.
 - Native tests: 65 passed, one display-dependent test ignored. Native Clippy
   passed with warnings denied. Wasm check passed with existing dead-code warnings.
 
+## Step 3: Preserve imported plugins during editing (2026-10-06)
+
+- Preserve document and step metadata, variable definitions, subprograms,
+  disabled flags, and unknown fields. Step identity survives reordering.
+  Unsupported steps use JSON cards. Keep launcher hotkeys and tags on save.
+- Native tests: 70 passed, two opt-in tests ignored. Clippy passed with warnings
+  denied. An Xvfb editor save preserved a real imported plugin and launcher fields.
+- Downloaded five Citavi exports from
+  [myCitaviMacros](https://github.com/AlexShyXie/myCitaviMacros/tree/50fd22f27e4c752459ef9fe0dc1c96d490cef81d/Quicker%E5%8A%A8%E4%BD%9C%E9%A2%84%E8%AE%BE)
+  and a [QuickLook export](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
+  All six passed raw round-trip, builder round-trip, and title-only editing
+  assertions. This verifies preservation, not execution of their Windows tools.
+- Repeat against downloaded JSON files with `QUICKER_COMPAT_CORPUS=/path/to/json
+  cargo test downloaded_actions_round_trip_without_data_loss -- --ignored`.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Lossless visual editing of imported workflows: currently the builder can
-   discard variables, metadata, flags, or step properties it cannot represent.
-   Raw import/export is preserved, but that alone does not finish the editor.
+1. Download actions by ID and produce reproducible compatibility reports using
+   the production importer, editor, and an explicit runtime capability inventory.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument
    parsing, and focused end-to-end tests of representative plugins.

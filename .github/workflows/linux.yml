@@ -21,4 +21,5 @@ jobs:
       - run: cargo build --locked
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-plugin-editor-x11.py tests/fixtures/formula-image.json
       - run: xvfb-run -a cargo test clipboard_persists_after_action_worker_exits -- --ignored

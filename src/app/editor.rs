@@ -341,7 +341,30 @@ impl QuickerApp {
                     });
                     ui.add_space(6.0);
 
-                    match step {
+                    if let LowCodePluginStep::Preserved { source, .. } = step {
+                        if source["Disabled"].as_bool() == Some(true) {
+                            ui.label(egui::RichText::new("Disabled in imported workflow").weak());
+                        }
+                        if let Some(note) = source["Note"].as_str().filter(|note| !note.is_empty())
+                        {
+                            ui.label(note);
+                        }
+                    }
+                    match step.editable_mut() {
+                        LowCodePluginStep::Preserved { .. } => {
+                            unreachable!("editable_mut unwraps preserved steps")
+                        }
+                        LowCodePluginStep::Raw { json, reason } => {
+                            ui.label(reason.as_str());
+                            ui.label(
+                                "Preserved in the workflow. Edit its JSON or keep it unchanged.",
+                            );
+                            ui.add(
+                                egui::TextEdit::multiline(json)
+                                    .code_editor()
+                                    .desired_rows(8),
+                            );
+                        }
                         LowCodePluginStep::OpenUrl { url } => {
                             ui.label("URL or $variable:");
                             ui.text_edit_singleline(url);
@@ -670,7 +693,7 @@ impl QuickerApp {
     fn plugin_flow_variable_names(steps: &[LowCodePluginStep]) -> Vec<String> {
         let mut names = BTreeSet::new();
         for step in steps {
-            match step {
+            match step.editable() {
                 LowCodePluginStep::SimpleIf {
                     if_steps,
                     else_steps,
@@ -1042,7 +1065,7 @@ impl QuickerApp {
         ui.label(
             egui::RichText::new(match self.plugin_editor_mode {
                 PluginEditorMode::LowCode =>
-                    "Import a supported ActionType 7, 11, or 24 document into the builder, or export the current draft as native Quicker JSON.",
+                    "Import ActionType 7, 11, or 24 JSON into the builder, or export the current draft. Original metadata and custom steps are preserved. Apply JSON edits with Import JSON Into Builder before saving.",
                 PluginEditorMode::RawJson { .. } =>
                     "This plugin is currently using raw JSON mode. You can edit the JSON directly here, then save it, or try importing it into the builder again after simplifying unsupported steps.",
             })

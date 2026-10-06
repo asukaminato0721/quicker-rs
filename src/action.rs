@@ -1,3 +1,5 @@
+mod preservation;
+
 #[cfg(not(target_arch = "wasm32"))]
 use crate::process::{output as run_command_for_output, status as run_command_for_status};
 use fancy_regex::Regex;
@@ -84,6 +86,7 @@ pub struct PluginPipelineStorage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LowCodePluginDraft {
+    source: Option<preservation::SourceDocument>,
     pub kind: LowCodePluginKind,
     pub title: String,
     pub description: String,
@@ -98,6 +101,7 @@ pub struct LowCodePluginDraft {
 impl Default for LowCodePluginDraft {
     fn default() -> Self {
         Self {
+            source: None,
             kind: LowCodePluginKind::PluginFlow,
             title: String::new(),
             description: String::new(),
@@ -127,6 +131,15 @@ pub enum LowCodeKeyMacroStep {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LowCodePluginStep {
+    Preserved {
+        source: Value,
+        baseline: Value,
+        step: Box<LowCodePluginStep>,
+    },
+    Raw {
+        json: String,
+        reason: String,
+    },
     OpenUrl {
         url: String,
     },
@@ -517,11 +530,20 @@ impl Action {
 impl LowCodePluginDraft {
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
         let document = parse_quicker_action_document(input)?;
+        let mut draft = Self::from_document(document)?;
+        draft.source = Some(preservation::SourceDocument {
+            original: parse_json_lenient(input, "Invalid Quicker JSON")?,
+            baseline: draft.generated_document()?,
+        });
+        Ok(draft)
+    }
 
+    fn from_document(document: QuickerActionDocument) -> Result<Self, String> {
         match document.action_type {
             QUICKER_KEYS_ACTION_TYPE => {
                 let key_macro_steps = parse_quicker_key_macro_script(document.data_text())?;
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::KeyMacro,
                     title: document.title,
                     description: document.description,
@@ -536,6 +558,7 @@ impl LowCodePluginDraft {
             QUICKER_OPEN_ACTION_TYPE => {
                 let launch = document.launch_payload()?;
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::OpenApp,
                     title: document.title,
                     description: document.description,
@@ -555,14 +578,13 @@ impl LowCodePluginDraft {
                     );
                 }
 
-                let data = document.data_payload()?;
-                let steps = data
-                    .steps
-                    .iter()
-                    .map(low_code_step_from_document)
+                let data: Value = parse_json_lenient(document.data_text(), "Invalid workflow data")?;
+                let steps = data.get("Steps").and_then(Value::as_array).into_iter().flatten()
+                    .map(preservation::import_step)
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::PluginFlow,
                     title: document.title,
                     description: document.description,
@@ -581,6 +603,15 @@ impl LowCodePluginDraft {
     }
 
     pub fn to_quicker_json(&self) -> Result<String, String> {
+        let generated = self.generated_document()?;
+        let document = match &self.source {
+            Some(source) => preservation::merge_document(source, generated)?,
+            None => generated,
+        };
+        serde_json::to_string_pretty(&document).map_err(|err| err.to_string())
+    }
+
+    fn generated_document(&self) -> Result<Value, String> {
         let document = match self.kind {
             LowCodePluginKind::KeyMacro => QuickerActionDocument {
                 row: Some(0),
@@ -671,10 +702,10 @@ impl LowCodePluginDraft {
                 let steps = self
                     .steps
                     .iter()
-                    .map(|step| step.to_step_document(&mut variable_names))
+                    .map(|step| step.to_step_value(&mut variable_names))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let variables = variable_names
+                let variables: Vec<_> = variable_names
                     .into_iter()
                     .map(|name| QuickerPluginVariable {
                         key: name,
@@ -684,13 +715,13 @@ impl LowCodePluginDraft {
                     })
                     .collect();
 
-                let data = QuickerPluginData {
-                    limit_single_instance: false,
-                    summary_expression: Some(String::new()),
-                    sub_programs: Vec::new(),
-                    variables,
-                    steps,
-                };
+                let data = serde_json::json!({
+                    "LimitSingleInstance": false,
+                    "SummaryExpression": "",
+                    "SubPrograms": [],
+                    "Variables": variables,
+                    "Steps": steps,
+                });
 
                 QuickerActionDocument {
                     row: Some(0),
@@ -754,7 +785,7 @@ impl LowCodePluginDraft {
             }
         };
 
-        serde_json::to_string_pretty(&document)
+        serde_json::to_value(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 
@@ -774,8 +805,24 @@ impl LowCodePluginDraft {
 }
 
 impl LowCodePluginStep {
+    pub fn editable(&self) -> &Self {
+        match self {
+            Self::Preserved { step, .. } => step.editable(),
+            _ => self,
+        }
+    }
+
+    pub fn editable_mut(&mut self) -> &mut Self {
+        match self {
+            Self::Preserved { step, .. } => step.editable_mut(),
+            _ => self,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Preserved { step, .. } => step.label(),
+            Self::Raw { .. } => "Custom Step (JSON)",
             Self::OpenUrl { .. } => "Open URL",
             Self::Delay { .. } => "Delay",
             Self::SimpleIf { .. } => "If",
@@ -803,11 +850,25 @@ impl LowCodePluginStep {
         }
     }
 
-    fn to_step_document(
-        &self,
-        variable_names: &mut BTreeSet<String>,
-    ) -> Result<QuickerPluginStepDocument, String> {
-        match self {
+    fn to_step_value(&self, variable_names: &mut BTreeSet<String>) -> Result<Value, String> {
+        let document: Result<QuickerPluginStepDocument, String> = match self {
+            Self::Preserved {
+                source,
+                baseline,
+                step,
+            } => {
+                return Ok(preservation::apply_changes(
+                    source,
+                    baseline,
+                    &step.to_step_value(variable_names)?,
+                ));
+            }
+            Self::Raw { json, .. } => {
+                let value: Value = parse_json_lenient(json, "Invalid custom step JSON")?;
+                serde_json::from_value::<QuickerPluginStepDocument>(value.clone())
+                    .map_err(|err| format!("Invalid custom step: {err}"))?;
+                return Ok(value);
+            }
             Self::OpenUrl { url } => Ok(step_document(
                 "sys:openUrl",
                 map_with_binding([("url", url.as_str())]),
@@ -818,28 +879,12 @@ impl LowCodePluginStep {
                 map_with_binding([("delayMs", &delay_ms.to_string())]),
                 Map::new(),
             )),
-            Self::SimpleIf {
-                condition,
-                if_steps,
-                else_steps,
-            } => Ok(QuickerPluginStepDocument {
+            Self::SimpleIf { condition, .. } => Ok(QuickerPluginStepDocument {
                 step_runner_key: "sys:simpleIf".into(),
                 input_params: map_with_binding([("condition", condition.as_str())]),
                 output_params: Map::new(),
-                if_steps: Some(
-                    if_steps
-                        .iter()
-                        .map(|step| step.to_step_document(variable_names))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                else_steps: (!else_steps.is_empty())
-                    .then(|| {
-                        else_steps
-                            .iter()
-                            .map(|step| step.to_step_document(variable_names))
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()?,
+                if_steps: None,
+                else_steps: None,
                 note: None,
                 disabled: false,
                 collapsed: false,
@@ -1189,7 +1234,28 @@ impl LowCodePluginStep {
                 );
                 Ok(step_document("sys:outputText", input_params, Map::new()))
             }
+        };
+        let mut value = serde_json::to_value(document?).map_err(|err| err.to_string())?;
+        if let Self::SimpleIf {
+            if_steps,
+            else_steps,
+            ..
+        } = self
+        {
+            value["IfSteps"] = Value::Array(
+                if_steps
+                    .iter()
+                    .map(|step| step.to_step_value(variable_names))
+                    .collect::<Result<_, _>>()?,
+            );
+            value["ElseSteps"] = Value::Array(
+                else_steps
+                    .iter()
+                    .map(|step| step.to_step_value(variable_names))
+                    .collect::<Result<_, _>>()?,
+            );
         }
+        Ok(value)
     }
 }
 
@@ -1536,20 +1602,8 @@ fn low_code_step_from_document(
         }),
         "sys:simpleIf" => Ok(LowCodePluginStep::SimpleIf {
             condition: binding_string(&step.input_params, "condition").unwrap_or_default(),
-            if_steps: step
-                .if_steps
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(low_code_step_from_document)
-                .collect::<Result<Vec<_>, _>>()?,
-            else_steps: step
-                .else_steps
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(low_code_step_from_document)
-                .collect::<Result<Vec<_>, _>>()?,
+            if_steps: Vec::new(),
+            else_steps: Vec::new(),
         }),
         "sys:stateStorage" => match binding_string(&step.input_params, "type").as_deref() {
             Some("readActionState") => Ok(LowCodePluginStep::StateStorageRead {
@@ -4904,7 +4958,11 @@ mod tests {
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.steps.len(), 1);
         assert_eq!(
-            draft.steps,
+            draft
+                .steps
+                .iter()
+                .map(|step| step.editable().clone())
+                .collect::<Vec<_>>(),
             vec![LowCodePluginStep::OpenUrl {
                 url: "https://www.yuque.com/supermemo/wiki/keyboard-shortcuts".into()
             }]
@@ -4917,6 +4975,7 @@ mod tests {
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
         let draft = LowCodePluginDraft {
+            source: None,
             kind: LowCodePluginKind::PluginFlow,
             title: "Docs".into(),
             description: "open docs".into(),
@@ -4978,17 +5037,17 @@ mod tests {
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.title, "公式转图片");
         assert!(matches!(
-            draft.steps.first(),
+            draft.steps.first().map(LowCodePluginStep::editable),
             Some(LowCodePluginStep::StateStorageRead { .. })
         ));
         assert!(draft
             .steps
             .iter()
-            .any(|step| matches!(step, LowCodePluginStep::SimpleIf { .. })));
+            .any(|step| matches!(step.editable(), LowCodePluginStep::SimpleIf { .. })));
         assert!(draft
             .steps
             .iter()
-            .any(|step| matches!(step, LowCodePluginStep::ImageToBase64 { .. })));
+            .any(|step| matches!(step.editable(), LowCodePluginStep::ImageToBase64 { .. })));
     }
 
     #[test]
@@ -5020,6 +5079,7 @@ mod tests {
         });
 
         let draft = LowCodePluginDraft {
+            source: None,
             kind: LowCodePluginKind::KeyMacro,
             title: "Macro".into(),
             description: String::new(),

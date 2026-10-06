@@ -681,13 +681,18 @@ impl QuickerApp {
         Self::actions_at_path_mut(&mut profile.actions, &target.path)
     }
 
-    fn replace_action(&mut self, target: &ActionEditTarget, action: Action) -> bool {
+    fn replace_action(&mut self, target: &ActionEditTarget, mut action: Action) -> bool {
+        let plugin_editor = self.basic_draft.is_none();
         let Some(actions) = self.actions_mut_for_target(target) else {
             return false;
         };
         let Some(slot) = actions.get_mut(target.action_idx) else {
             return false;
         };
+        if plugin_editor {
+            action.hotkey = slot.hotkey.clone();
+            action.tags = slot.tags.clone();
+        }
         *slot = action;
         true
     }

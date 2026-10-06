@@ -69,9 +69,9 @@ Linux equivalents. Review imported actions before running them: actions can
 execute commands, access files, and make network requests.
 
 Basic actions support JSON import/export. The Quicker builder also exports
-JSON. Raw import/export preserves unknown document metadata; conversion through
-the visual builder can still lose fields it cannot represent (tracked in
-PORTING.md).
+JSON. Imported documents retain unknown metadata, variables, subprograms, and
+step options during visual editing. Unsupported steps remain editable JSON
+cards. Preserving a step does not mean its runner is implemented on Linux.
 
 ## Configuration
 
