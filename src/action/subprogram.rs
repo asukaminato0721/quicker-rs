@@ -38,6 +38,15 @@ pub(super) fn needs_input_target(
                     _ => return true,
                 }
             }
+            if step.step_runner_key == "sys:keyoperation" {
+                let binding = &step.input_params.get("type");
+                if binding.is_some_and(|b| {
+                    b["VarKey"].is_string()
+                        || b["Value"].as_str().is_some_and(|s| s != "get_key_state")
+                }) {
+                    return true;
+                }
+            }
             if let Some(steps) = step.if_steps.as_deref() {
                 pending.push(steps);
             }
@@ -253,6 +262,10 @@ impl QuickerRuntime {
         child.dependency_dir = self.dependency_dir.clone();
         child.action_state = self.action_state.clone();
         child.clipboard_before_copy = self.clipboard_before_copy;
+        #[cfg(target_os = "linux")]
+        {
+            child.keyboard = self.keyboard.clone();
+        }
         let result = child.run_steps(&data.steps);
         // State belongs to the action, including changes made before a failure.
         self.action_state = child.action_state;

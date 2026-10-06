@@ -162,6 +162,15 @@ application PID, exit status, or captured output. Windows accounts, elevation,
 non-normal window styles, and `waitInputIdle` are unsupported. Windows executable
 paths need installed Linux equivalents. The checker reports these requirements.
 
+`sys:keyoperation` can read X11 key state, press a key, or release it.
+It accepts Windows key names, decimal codes, and hexadecimal codes. Generic
+modifiers read both sides. CapsLock and NumLock state uses XKB locked modifiers.
+Left, middle, and right mouse buttons support state reads only. Physical device
+state, side mouse buttons, and Quicker virtual keys remain unsupported.
+The installed keyboard layout must contain the requested key. Keys pressed by
+an action are shared with its subprograms and released when the action ends,
+fails, or is cancelled. Keys held before the action are not owned by this cleanup.
+
 `sys:subprogram` runs action-local subprograms by name. Each call has fresh typed
 variables. Inputs and outputs use `var:KEY` bindings and the variable's `IsInput`
 and `IsOutput` flags. Calls can use definitions in the current or parent scope.

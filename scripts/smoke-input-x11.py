@@ -37,6 +37,18 @@ with tempfile.TemporaryDirectory(prefix='quicker-input-') as tmp:
 
     text = '--literal-input-123'
     document = json.dumps({'ActionType': 7, 'Title': 'Input Smoke', 'Data': '%' + text})
+    if '--key-operation' in sys.argv:
+        def key_step(operation, key):
+            return {'StepRunnerKey': 'sys:keyoperation', 'InputParams': {
+                'type': {'Value': operation}, 'key': {'Value': key}}}
+        text = 'A '
+        document = json.dumps({'ActionType': 24, 'Title': 'Input Smoke', 'Data': json.dumps({
+            'Steps': [
+                {'StepRunnerKey': 'sys:subprogram', 'InputParams': {'subProgram': {'Value': 'Hold Shift'}}},
+                key_step('key_down', '65'), key_step('key_up', 'A'),
+                key_step('key_up', 'SHIFT'), key_step('key_down', 'Space'), key_step('key_up', '0x20')],
+            'SubPrograms': [{'Name': 'Hold Shift', 'Steps': [key_step('key_down', 'LSHIFT')]}]
+        })})
     config = Path(tmp) / 'config/quicker-rs/config.toml'
     config.parent.mkdir(parents=True)
     config.write_text('[[profiles]]\nname = "Global"\n[[profiles.actions]]\n'

@@ -63,7 +63,7 @@ Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
 [用QuickLook预览文件](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
 The other Citavi exports also have unresolved subprogram dependencies. QuickLook
-still needs `sys:getSelectedFiles`, `sys:keyoperation`, the `outputText` input
+still needs `sys:getSelectedFiles`, the `outputText` input
 mode, and a Linux replacement for `QuickLook.exe`. Its `sys:run` step is now
 recognized. Passing preservation checks does not
 establish execution compatibility with Citavi, QuickLook, or Windows APIs.
@@ -192,3 +192,28 @@ application, its PID and window handle, and subsequent keyboard delivery.
 On 2026-10-07, all six downloaded exports passed preservation again. The QuickLook
 report recognizes `sys:run` and flags `QuickLook.exe` as requiring replacement.
 These tests do not verify execution of the Windows QuickLook application.
+
+## Key operation evidence
+
+The MSI `KeyOperationStep.Execute` at RVA `0x2dd924` delegates to `0x40774c`.
+The body selects state, down, and up operations. `KeyFromValueOrName` at
+`0x116214` accepts hexadecimal and decimal values, then enum names. The
+`GetKeyStateFromSystem` method at `0x11629c` returns separate down and toggle bits.
+The [official module reference](https://docs.getquicker.net/v2/xaction/modules/keyoperation/)
+describes paired presses/releases and state outputs.
+
+The X11 backend uses XTEST events and XKB locked modifiers. It reads the active
+keyboard mapping for each operation. Generic modifiers query both sides; a
+generic press uses the left side. Mouse state supports the three core buttons.
+The action owns only keys that were up before its injected press. Subprograms
+share ownership. Teardown releases those keys after success, stop, error, or
+cancellation. Quicker virtual keys and raw physical state remain unsupported.
+
+```sh
+xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test key_operations_query_state -- --ignored
+xvfb-run -a python3 scripts/smoke-input-x11.py --key-operation
+```
+
+Both checks passed on 2026-10-07. The first verifies live state, toggling,
+subprogram ownership, cancellation cleanup, and preservation of externally held
+keys. The second verifies actual Shift+A and Space input and closed-target errors.

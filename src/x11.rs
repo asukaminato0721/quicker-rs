@@ -3,7 +3,9 @@ use crate::action::ActionExecutionControl;
 use crate::focus::FocusedProcess;
 use std::time::{Duration, Instant};
 use xcb::{x, Xid, XidNew};
+mod keyboard;
 mod windows;
+pub(crate) use keyboard::Keyboard;
 pub(crate) use windows::{WindowMatch, WindowQuery};
 
 xcb::atoms_struct! {

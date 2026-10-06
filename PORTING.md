@@ -233,13 +233,34 @@ establish completion of the port.
   executable still require implementation or replacement. This is not proof
   that the complete QuickLook workflow executes on Linux.
 
+## Step 12: Operate individual keys on X11 (2026-10-07)
+
+- Added `sys:keyoperation` for state reads, key presses, and key releases.
+  Verified the operation body and key parser against the MSI. Names, decimal
+  codes, and hexadecimal codes map to keys in the installed X11 layout.
+- Added XTEST injection, XKB lock-state reads, generic and side-specific
+  modifiers, and left/middle/right mouse button state reads. Native Wayland,
+  physical state, side mouse buttons, and Quicker virtual keys remain gaps.
+- Shared key ownership through subprogram calls. Action teardown releases keys
+  pressed by that action after completion, failure, or cancellation. It does not
+  claim keys already held by another source. Input steps restore the target;
+  state-only workflows do not require a target window.
+- The isolated X11 test passed state reads, CapsLock toggling, nested ownership,
+  stop/error/cancel cleanup, and preservation of an externally held key. The
+  launcher workflow passed actual Shift+A and Space input to the target window,
+  plus failure after the target closed. Both checks are included in CI.
+- Native tests: 117 passed, seven opt-in tests ignored. Clippy passed with
+  warnings denied. The new X11 opt-in test passed separately. Wasm check passed
+  with preview dead-code warnings. All six real exports passed preservation.
+  The QuickLook report now has one missing runner: selected files.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Implement missing modules found in real downloads, including selected files,
-   key operations, and text input. Validate shared subprogram execution when an export or
+1. Implement missing modules found in real downloads, including selected files
+   and text input. Validate shared subprogram execution when an export or
    authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,

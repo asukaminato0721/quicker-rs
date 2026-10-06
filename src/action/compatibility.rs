@@ -311,6 +311,62 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:keyoperation" {
+        issue(issues, path, "requires_x11_keyboard_layout", "warning");
+        for key in ["key", "getRealMouseState"] {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.contains('{') || s.starts_with("$="))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if key == "getRealMouseState" {
+                if truthy(Some(&binding["Value"]))
+                    && !matches!(
+                        step["InputParams"]["type"]["Value"].as_str(),
+                        Some("key_down" | "key_up")
+                    )
+                {
+                    issue(
+                        issues,
+                        &option_path,
+                        "physical_key_state_not_supported",
+                        "blocker",
+                    );
+                }
+            } else {
+                match key_steps::key_code(&value_to_string(&binding["Value"])) {
+                    Ok(5 | 6) => issue(
+                        issues,
+                        &option_path,
+                        "side_mouse_button_state_not_supported",
+                        "blocker",
+                    ),
+                    Ok(1 | 2 | 4)
+                        if step["InputParams"]["type"]["Value"]
+                            .as_str()
+                            .is_some_and(|s| s != "get_key_state") =>
+                    {
+                        issue(
+                            issues,
+                            &option_path,
+                            "mouse_injection_requires_mouse_module",
+                            "blocker",
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(_) => issue(issues, &option_path, "unsupported_windows_key", "blocker"),
+                }
+            }
+        }
+    }
     if runner == "sys:run" {
         issue(
             issues,
@@ -402,6 +458,11 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
         }
     }
     let option: Option<(&str, &[&str], &str)> = match runner {
+        "sys:keyoperation" => Some((
+            "type",
+            &["get_key_state", "key_down", "key_up"],
+            "get_key_state",
+        )),
         "sys:stop" => Some(("method", &["default", "forcestop"], "default")),
         "sys:stringProcess" => Some(("method", &["toLower", "urlEncode"], "")),
         "sys:stateStorage" => Some(("type", &["readActionState", "saveActionState"], "")),
@@ -638,6 +699,26 @@ mod tests {
                 |i| i["code"] == "windows_program_requires_linux_replacement"
                     && i["severity"] == "warning"
             ));
+    }
+
+    #[test]
+    fn key_operation_report_checks_keys_and_backend_limits() {
+        let report = |operation: &str, key: &str| {
+            inspect(&workflow(
+                json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"type":{"Value":operation}, "key":{"Value":key}}}]),
+            ))
+        };
+        assert_eq!(exit_code(&report("key_up", "Space")), 0);
+        assert_eq!(exit_code(&report("get_key_state", "LBUTTON")), 0);
+        for (operation, key) in [
+            ("key_down", "LBUTTON"),
+            ("key_up", "Ctrl+A"),
+            ("key_keydown_v1", "Space"),
+            ("get_key_state", "XBUTTON1"),
+        ] {
+            assert_eq!(exit_code(&report(operation, key)), 1);
+        }
+        assert_eq!(report("key_up", "Space")["runtime"]["executed"], false);
     }
 
     #[test]

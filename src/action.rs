@@ -2,6 +2,7 @@ mod clipboard_steps;
 pub(crate) mod compatibility;
 mod control_flow;
 mod expression;
+mod key_steps;
 mod preservation;
 mod run_steps;
 mod runner;
@@ -1997,6 +1998,8 @@ struct QuickerRuntime {
     subprogram_scopes: Vec<Vec<Value>>,
     call_depth: usize,
     dependency_dir: Option<std::path::PathBuf>,
+    #[cfg(target_os = "linux")]
+    keyboard: Arc<std::sync::Mutex<Option<crate::x11::Keyboard>>>,
 }
 
 impl QuickerRuntime {
@@ -2045,6 +2048,8 @@ impl QuickerRuntime {
             subprogram_scopes: vec![data.sub_programs.clone()],
             call_depth: 0,
             dependency_dir: subprogram::dependency_dir(),
+            #[cfg(target_os = "linux")]
+            keyboard: Default::default(),
         })
     }
 
@@ -2070,6 +2075,7 @@ impl QuickerRuntime {
 
     fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
         match runner::StepRunner::from_key(&step.step_runner_key) {
+            Some(runner::StepRunner::KeyOperation) => self.run_key_operation(step),
             Some(runner::StepRunner::Run) => self.run_program_step(step),
             Some(runner::StepRunner::OpenUrl) => {
                 let url = self.input_string(&step.input_params, "url")?;
@@ -4674,6 +4680,11 @@ mod tests {
             "ElseSteps": [{"StepRunnerKey": "sys:outputText"}]
         }]))
         .needs_input_target());
+        for operation in ["key_down", "key_up", "$= {operation}"] {
+            assert!(flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"type":{"Value":operation}, "key":{"Value":"Space"}}}])).needs_input_target());
+        }
+        assert!(!flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"key":{"Value":"Space"}}}])).needs_input_target());
+        assert!(!flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"type":{"Value":"get_key_state"}, "key":{"Value":"Space"}}}])).needs_input_target());
         assert!(!flow(serde_json::json!([{
             "StepRunnerKey": "sys:simpleIf", "Disabled": true,
             "IfSteps": [{"StepRunnerKey": "sys:keyInput"}]
