@@ -3,6 +3,7 @@ pub(crate) mod compatibility;
 mod control_flow;
 mod expression;
 mod preservation;
+mod run_steps;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
@@ -2069,6 +2070,7 @@ impl QuickerRuntime {
 
     fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
         match runner::StepRunner::from_key(&step.step_runner_key) {
+            Some(runner::StepRunner::Run) => self.run_program_step(step),
             Some(runner::StepRunner::OpenUrl) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 open_target(&url)
@@ -2779,11 +2781,10 @@ fn execute_quicker_launch(document: &QuickerActionDocument) -> ExecResult {
         };
     }
 
-    let args = launch
-        .arguments
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let args = match run_steps::parse_arguments(&launch.arguments) {
+        Ok(args) => args,
+        Err(error) => return ExecResult::Err(error),
+    };
     let working_dir = launch
         .set_working_dir
         .then(|| {

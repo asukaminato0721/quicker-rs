@@ -213,18 +213,38 @@ establish completion of the port.
   Clippy and Wasm checks passed, with preview dead-code warnings. Tests use the
   production Rust checker to detect missing runners inside downloaded dependencies.
 
+## Step 11: Run programs from imported workflows (2026-10-07)
+
+- Added `sys:run` with direct argument passing, Windows CRT argument parsing,
+  alternate paths, working directories, and child environment overrides.
+  Type 11 launch arguments now use the same parser.
+- Added detached execution, exit waits, PID and exit-code outputs, bounded
+  stdout/stderr capture, failure outputs, and cancellation of waited process
+  groups. Nonzero exit codes preserve successful launch status, as in the MSI.
+- Added desktop handlers for files and URIs, plus existing-window reuse through
+  the X11 backend. Unsupported Windows options fail before launch. Reports flag
+  Windows targets and dynamic options. Native output decoding requires UTF-8.
+- Native tests: 115 passed, six opt-in tests ignored. Python tests: 17 passed.
+  Clippy passed with warnings denied. Wasm check passed with preview dead-code
+  warnings. The X11 workflow passed with real windows and verified `sys:run`
+  window reuse, PID, handle, and subsequent keyboard delivery.
+- All six downloaded exports passed preservation. QuickLook now has two missing
+  runners: selected files and key operations. Its text-input mode and Windows
+  executable still require implementation or replacement. This is not proof
+  that the complete QuickLook workflow executes on Linux.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
 1. Implement missing modules found in real downloads, including selected files,
-   key operations, and run. Validate shared subprogram execution when an export or
+   key operations, and text input. Validate shared subprogram execution when an export or
    authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
-   cancellation of dialogs and every subprocess, reliable launch argument
-   parsing, and focused end-to-end tests of representative plugins.
+   cancellation of dialogs and waited subprocesses, and focused end-to-end tests
+   of representative plugins.
 3. Native Wayland activation/input/focus support with explicit capability
    reporting; global mouse activation and pointer placement on X11.
 4. Per-action hotkeys, complete profile management/navigation and action

@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StepRunner {
     OpenUrl,
+    Run,
     StateStorage,
     MsgBox,
     SelectFolder,
@@ -42,6 +43,7 @@ impl StepRunner {
     pub(super) fn from_key(key: &str) -> Option<Self> {
         Some(match key {
             "sys:openUrl" => Self::OpenUrl,
+            "sys:run" => Self::Run,
             "sys:stateStorage" => Self::StateStorage,
             "sys:MsgBox" => Self::MsgBox,
             "sys:selectFolder" => Self::SelectFolder,

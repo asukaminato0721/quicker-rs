@@ -147,6 +147,21 @@ Program paths are executable paths without shell arguments. Startup waits up to
 five seconds. Hotkey activation waits up to one second. Native Wayland window
 activation remains unsupported.
 
+`sys:run` starts Linux programs with Quicker argument quoting, alternate paths,
+working directories, and environment overrides. Arguments are passed directly;
+shell operators are literal. It supports detached launches, exit waits, PID and
+exit-code outputs, and bounded stdout/stderr capture. Captured output requires
+UTF-8; `oem` selects native UTF-8 on Linux. Nonzero exit codes do not indicate a
+launch failure. Cancellation stops waited processes and their descendants.
+Detached applications continue running after the action ends.
+
+The run module can reuse an existing X11 application window. Window outputs for
+a new detached process are a single immediate query, so they can be empty before
+the window appears. Documents and URIs use desktop handlers and do not provide
+application PID, exit status, or captured output. Windows accounts, elevation,
+non-normal window styles, and `waitInputIdle` are unsupported. Windows executable
+paths need installed Linux equivalents. The checker reports these requirements.
+
 `sys:subprogram` runs action-local subprograms by name. Each call has fresh typed
 variables. Inputs and outputs use `var:KEY` bindings and the variable's `IsInput`
 and `IsOutput` flags. Calls can use definitions in the current or parent scope.

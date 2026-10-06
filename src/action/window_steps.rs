@@ -92,7 +92,7 @@ impl QuickerRuntime {
     }
 
     #[cfg(target_os = "linux")]
-    fn activate_window(
+    pub(super) fn activate_window(
         &self,
         step: &QuickerPluginStepDocument,
     ) -> Result<(u32, u32, String), String> {
@@ -153,7 +153,7 @@ impl QuickerRuntime {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn activate_window(
+    pub(super) fn activate_window(
         &self,
         _step: &QuickerPluginStepDocument,
     ) -> Result<(u32, u32, String), String> {

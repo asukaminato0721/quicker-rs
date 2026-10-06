@@ -37,10 +37,18 @@ fn check_cancel(child: &mut Child, control: Option<&ActionExecutionControl>) -> 
 }
 
 pub fn status(
-    mut command: Command,
+    command: Command,
     control: Option<&ActionExecutionControl>,
     context: &str,
 ) -> Result<ExitStatus, String> {
+    status_with_pid(command, control, context).map(|(_, status)| status)
+}
+
+pub fn status_with_pid(
+    mut command: Command,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<(u32, ExitStatus), String> {
     if control.is_some_and(ActionExecutionControl::is_cancelled) {
         return Err("Action cancelled".into());
     }
@@ -51,7 +59,7 @@ pub fn status(
     loop {
         check_cancel(&mut child, control)?;
         match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
+            Ok(Some(status)) => return Ok((child.id(), status)),
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(err) => {
                 terminate(&mut child);
@@ -93,12 +101,39 @@ fn drain(pipe: &mut impl Read, bytes: &mut Vec<u8>, truncated: &mut bool) -> io:
     Ok(())
 }
 
-#[cfg(unix)]
 pub fn output(
-    mut command: Command,
+    command: Command,
     control: Option<&ActionExecutionControl>,
     context: &str,
 ) -> Result<Output, String> {
+    output_with_pid(command, control, context).map(|(_, output)| output)
+}
+
+pub fn detached(
+    mut command: Command,
+    control: Option<&ActionExecutionControl>,
+) -> Result<u32, String> {
+    if control.is_some_and(ActionExecutionControl::is_cancelled) {
+        return Err("Action cancelled".into());
+    }
+    prepare(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start program: {e}"))?;
+    check_cancel(&mut child, control)?;
+    let pid = child.id();
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(pid)
+}
+
+#[cfg(unix)]
+pub fn output_with_pid(
+    mut command: Command,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<(u32, Output), String> {
     if control.is_some_and(ActionExecutionControl::is_cancelled) {
         return Err("Action cancelled".into());
     }
@@ -144,25 +179,28 @@ pub fn output(
     if err_truncated {
         err.extend_from_slice(b"\n[stderr truncated at 1 MiB]\n");
     }
-    Ok(Output {
-        status,
-        stdout: out,
-        stderr: err,
-    })
+    Ok((
+        child.id(),
+        Output {
+            status,
+            stdout: out,
+            stderr: err,
+        },
+    ))
 }
 
 #[cfg(not(unix))]
-pub fn output(
+pub fn output_with_pid(
     mut command: Command,
     control: Option<&ActionExecutionControl>,
     context: &str,
-) -> Result<Output, String> {
+) -> Result<(u32, Output), String> {
     // Files avoid pipe deadlocks on platforms without nonblocking Unix pipes.
     let mut stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut stderr = tempfile::tempfile().map_err(|e| e.to_string())?;
     command.stdout(stdout.try_clone().map_err(|e| e.to_string())?);
     command.stderr(stderr.try_clone().map_err(|e| e.to_string())?);
-    let status = status(command, control, context)?;
+    let (pid, status) = status_with_pid(command, control, context)?;
     use std::io::{Seek, SeekFrom};
     stdout.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     stderr.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
@@ -175,11 +213,14 @@ pub fn output(
         .take(OUTPUT_LIMIT as u64)
         .read_to_end(&mut err)
         .map_err(|e| e.to_string())?;
-    Ok(Output {
-        status,
-        stdout: out,
-        stderr: err,
-    })
+    Ok((
+        pid,
+        Output {
+            status,
+            stdout: out,
+            stderr: err,
+        },
+    ))
 }
 
 #[cfg(all(test, unix))]

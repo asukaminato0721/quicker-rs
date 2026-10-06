@@ -86,6 +86,11 @@ with tempfile.TemporaryDirectory(prefix='quicker-window-') as tmp:
                  'OutputParams': {'isSuccess': 'spawnOk', 'pid': 'spawnPid', 'mainWinHandle': 'spawnHandle'}},
                 *[save(k) for k in ['spawnOk', 'spawnPid', 'spawnHandle']],
                 {'StepRunnerKey': 'sys:keyInput', 'InputParams': {'keys': bind(json.dumps({'CtrlKeys': [], 'Keys': [66]}))}},
+                {'StepRunnerKey': 'sys:run', 'InputParams': {
+                    'path': bind('xterm'), 'activateWindowIfRunning': bind('1')},
+                 'OutputParams': {'isSuccess': 'runOk', 'pid': 'runPid', 'mainWinHandle': 'runHandle'}},
+                *[save(k) for k in ['runOk', 'runPid', 'runHandle']],
+                {'StepRunnerKey': 'sys:keyInput', 'InputParams': {'keys': bind(json.dumps({'CtrlKeys': [], 'Keys': [67]}))}},
             ]
             document = {'ActionType': 24, 'Title': 'Activation Smoke', 'Data': json.dumps({'Steps': steps})}
             config.write_text('[[profiles]]\nname = "Global"\n[[profiles.actions]]\nname = "Activation Smoke"\n'
@@ -102,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix='quicker-window-') as tmp:
             def complete():
                 if state.exists():
                     data = json.loads(state.read_text()).get('Activation Smoke', {})
-                    return data if 'spawnHandle' in data else False
+                    return data if 'runHandle' in data else False
                 return False
             data = wait_for(complete, 'activation workflow')
             assert data['ok'] == '1', data
@@ -114,11 +119,13 @@ with tempfile.TemporaryDirectory(prefix='quicker-window-') as tmp:
             wait_for(lambda: Path(tmp + '/Activation Target').read_bytes() == b'a', 'target key input')
             assert Path(tmp + '/Original Window').read_bytes() == b''
             assert data['spawnOk'] == '1', data
-            wait_for(lambda: Path(tmp + '/spawned').exists() and Path(tmp + '/spawned').read_bytes() == b'b', 'spawned target key input')
+            assert data['runOk'] == '1' and data['runPid'] == data['spawnPid'], data
+            assert data['runHandle'] == data['spawnHandle'], data
+            wait_for(lambda: Path(tmp + '/spawned').exists() and Path(tmp + '/spawned').read_bytes() == b'bc', 'spawned target key input')
             assert command('xdotool', 'getwindowfocus') == data['spawnHandle']
             command(str(BINARY), '--quit')
             assert app.wait(timeout=8) == 0
-            print('PASS: title/class/PID filters, activation metadata, key recipients, failure outputs, and path launch')
+            print('PASS: window filters, activation metadata, key recipients, failure outputs, path launch, and sys:run reuse')
         except Exception:
             log.seek(0)
             print(log.read())

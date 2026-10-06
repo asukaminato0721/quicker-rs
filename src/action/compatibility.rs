@@ -311,6 +311,96 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:run" {
+        issue(
+            issues,
+            path,
+            "linux_launch_target_requires_validation",
+            "warning",
+        );
+        let dynamic = |key: &str| {
+            let binding = &step["InputParams"][key];
+            binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{') || s.contains('%'))
+        };
+        for key in [
+            "path",
+            "arg",
+            "windowStyle",
+            "runas",
+            "waitInputIdle",
+            "username",
+            "password",
+            "envVariables",
+            "outputEncoding",
+        ] {
+            let option_path = format!("{path}/InputParams/{key}");
+            if dynamic(key) {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+                continue;
+            }
+            let value = step["InputParams"][key]["Value"]
+                .as_str()
+                .unwrap_or_default();
+            let supported = match key {
+                "path" => {
+                    if value.is_empty() {
+                        issue(issues, &option_path, "missing_run_target", "blocker");
+                    }
+                    let windows = value.to_ascii_lowercase().ends_with(".exe")
+                        || value.as_bytes().get(1) == Some(&b':');
+                    if windows {
+                        let alternatives = &step["InputParams"]["alternativePath"];
+                        let has_alternative = alternatives["VarKey"].is_string()
+                            || alternatives["Value"]
+                                .as_str()
+                                .is_some_and(|s| !s.trim().is_empty());
+                        issue(
+                            issues,
+                            &option_path,
+                            "windows_program_requires_linux_replacement",
+                            if has_alternative {
+                                "warning"
+                            } else {
+                                "blocker"
+                            },
+                        );
+                    }
+                    true
+                }
+                "arg" => run_steps::parse_arguments(value).is_ok(),
+                "windowStyle" => matches!(value, "" | "0"),
+                "runas" | "waitInputIdle" => !truthy(Some(&step["InputParams"][key]["Value"])),
+                "username" | "password" => value.is_empty(),
+                "envVariables" => run_steps::environment(value).is_ok(),
+                "outputEncoding" => matches!(value, "" | "oem" | "utf8"),
+                _ => true,
+            };
+            if !supported {
+                issue(issues, &option_path, "unsupported_run_option", "blocker");
+            }
+        }
+        if truthy(Some(
+            &step["InputParams"]["activateWindowIfRunning"]["Value"],
+        )) || ["mainWinHandle", "mainWinTitle"]
+            .iter()
+            .any(|key| step["OutputParams"][key].is_string())
+        {
+            issue(
+                issues,
+                path,
+                "requires_x11_matching_application_window",
+                "warning",
+            );
+        }
+    }
     let option: Option<(&str, &[&str], &str)> = match runner {
         "sys:stop" => Some(("method", &["default", "forcestop"], "default")),
         "sys:stringProcess" => Some(("method", &["toLower", "urlEncode"], "")),
@@ -519,6 +609,35 @@ mod tests {
             &json!({"ActionType":24,"Title":"Subprogram", "Data":data.to_string()}).to_string(),
         );
         assert_eq!(exit_code(&report), 0);
+    }
+
+    #[test]
+    fn run_reports_windows_targets_and_unsupported_options_without_execution() {
+        let mut step = json!({"StepRunnerKey":"sys:run", "InputParams": {
+            "path":{"Value":"QuickLook.exe"}, "runas":{"Value":"1"},
+            "password":{"Value":"do-not-print-this-password"}
+        }});
+        let report = inspect(&workflow(json!([step])));
+        let issues = report["runtime"]["issues"].as_array().unwrap();
+        assert!(issues.iter().any(
+            |i| i["code"] == "windows_program_requires_linux_replacement"
+                && i["severity"] == "blocker"
+        ));
+        assert!(issues.iter().any(|i| i["code"] == "unsupported_run_option"));
+        assert!(!issues.iter().any(|i| i["code"] == "unsupported_runner"));
+        assert!(!report.to_string().contains("do-not-print-this-password"));
+        assert_eq!(report["runtime"]["executed"], false);
+        step["InputParams"] = json!({"path":{"Value":"QuickLook.exe"}, "alternativePath":{"Value":"/usr/bin/preview"}});
+        let report = inspect(&workflow(json!([step])));
+        assert_eq!(exit_code(&report), 0);
+        assert!(report["runtime"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |i| i["code"] == "windows_program_requires_linux_replacement"
+                    && i["severity"] == "warning"
+            ));
     }
 
     #[test]

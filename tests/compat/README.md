@@ -63,7 +63,9 @@ Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
 [用QuickLook预览文件](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
 The other Citavi exports also have unresolved subprogram dependencies. QuickLook
-has missing runners. Passing preservation checks does not
+still needs `sys:getSelectedFiles`, `sys:keyoperation`, the `outputText` input
+mode, and a Linux replacement for `QuickLook.exe`. Its `sys:run` step is now
+recognized. Passing preservation checks does not
 establish execution compatibility with Citavi, QuickLook, or Windows APIs.
 
 ## Automated checks
@@ -167,3 +169,26 @@ The workflow test checks two existing xterm windows, exact keyboard recipients,
 failure outputs, and a program launched through a path with spaces. Its
 `--minimized` mode requires a window manager. That mode passed with KWin in an
 isolated Xvfb/D-Bus session. Application-specific tray hotkeys still need testing.
+
+## Run module evidence
+
+The MSI `RunOrOpenStep.Execute` at RVA `0x2d04d8` delegates to the body at
+`0x400dc8`. It reads run options, captures output when an output variable is
+bound, and treats a completed process launch as successful even with a nonzero
+exit code. `ActionHelper.StartProcess` at `0x257a6c` handles alternate paths,
+environment values, working directories, and existing-window activation.
+The official [run module reference](https://www.getquicker.net/KC/Help/Doc/run)
+documents the input and output fields.
+
+The Linux implementation uses the
+[Microsoft CRT argument rules](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments?view=msvc-170).
+Eight tests check quoted and empty arguments, Unicode, literal shell operators,
+environment overrides, alternate paths, working directories, nonzero exit
+codes, output capture, detached launches, document handlers, and cancellation
+of process descendants. Unsupported Windows options fail before process launch.
+The X11 workflow test also calls `sys:run` and verifies reuse of the focused
+application, its PID and window handle, and subsequent keyboard delivery.
+
+On 2026-10-07, all six downloaded exports passed preservation again. The QuickLook
+report recognizes `sys:run` and flags `QuickLook.exe` as requiring replacement.
+These tests do not verify execution of the Windows QuickLook application.
