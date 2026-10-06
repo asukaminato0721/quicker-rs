@@ -3,6 +3,9 @@
 use serde_json::{Number, Value};
 use std::collections::HashMap;
 
+mod literals;
+mod paths;
+
 /// Convert defaults and outputs to the declared Quicker variable type.
 pub(super) fn convert(value: Value, kind: Option<u8>) -> Result<Value, String> {
     match kind {
@@ -94,8 +97,17 @@ pub(super) fn evaluate(input: &str, vars: &HashMap<String, Value>) -> Result<Val
     parse(input)?.eval(vars)
 }
 
-pub(super) fn validate(input: &str) -> Result<(), String> {
-    parse(input).map(|_| ())
+#[derive(Default)]
+pub(super) struct Features {
+    pub path_calls: bool,
+    pub windows_paths: bool,
+}
+
+pub(super) fn validate(input: &str) -> Result<Features, String> {
+    let expression = parse(input)?;
+    let mut features = Features::default();
+    expression.path_features(&mut features);
+    Ok(features)
 }
 
 fn parse(input: &str) -> Result<Expr, String> {
@@ -132,13 +144,9 @@ fn lex(mut input: &str) -> Result<Vec<Token>, String> {
             }
             tokens.push(Token::Variable(name.into()));
             input = &input[end + 1..];
-        } else if ch == '"' {
-            let mut stream = serde_json::Deserializer::from_str(input).into_iter::<String>();
-            let text = stream
-                .next()
-                .ok_or("Missing string")?
-                .map_err(|_| "Invalid string literal")?;
-            input = &input[stream.byte_offset()..];
+        } else if ch == '"' || input.starts_with("@\"") {
+            let (text, consumed) = literals::read(input)?;
+            input = &input[consumed..];
             tokens.push(Token::Value(Value::String(text)));
         } else if ch.is_ascii_digit() {
             let end = input
@@ -234,7 +242,8 @@ impl Parser {
                 Token::Value(value) => Expr::Value(value),
                 Token::Variable(name) => Expr::Variable(name),
                 Token::Name(name)
-                    if ["String", "string", "StringComparison"].contains(&name.as_str()) =>
+                    if ["String", "string", "StringComparison", "Path"]
+                        .contains(&name.as_str()) =>
                 {
                     Expr::Name(name)
                 }
@@ -311,6 +320,7 @@ impl Parser {
 
 fn validate_member(receiver: &Expr, name: &str, args: Option<usize>) -> Result<(), String> {
     let valid = match receiver {
+        Expr::Name(class) if class == "Path" => paths::supports(name, args),
         Expr::Name(class) if class == "String" || class == "string" => matches!(
             (name, args),
             ("IsNullOrEmpty" | "IsNullOrWhiteSpace", Some(1)) | ("Empty", None)
@@ -367,6 +377,56 @@ fn finite(value: f64) -> Result<Value, String> {
 }
 
 impl Expr {
+    // Track explicit path construction without searching raw source text.
+    // A backslash inside a regex string is not itself a Windows path operation.
+    fn path_features(&self, features: &mut Features) -> (bool, bool) {
+        match self {
+            Self::Value(Value::String(s)) => (false, super::file_steps::windows_path(s)),
+            Self::Member(receiver, name, args) => {
+                receiver.path_features(features);
+                let path_call = matches!(receiver.as_ref(), Self::Name(class) if class == "Path");
+                for arg in args.iter().flatten() {
+                    let (_, windows_literal) = arg.path_features(features);
+                    if path_call && windows_literal {
+                        features.windows_paths = true;
+                    }
+                }
+                features.path_calls |= path_call;
+                (
+                    path_call && !matches!(name.as_str(), "HasExtension" | "IsPathRooted"),
+                    false,
+                )
+            }
+            Self::Binary(op, lhs, rhs) => {
+                let (left_path, left_literal) = lhs.path_features(features);
+                let (right_path, right_literal) = rhs.path_features(features);
+                if op == "+" && ((left_path && right_literal) || (right_path && left_literal)) {
+                    features.windows_paths = true;
+                }
+                (
+                    op == "+" && (left_path || right_path),
+                    op == "+" && (left_literal || right_literal),
+                )
+            }
+            Self::Unary(_, expr) => {
+                expr.path_features(features);
+                (false, false)
+            }
+            Self::Conditional(condition, yes, no) => {
+                condition.path_features(features);
+                let yes = yes.path_features(features);
+                let no = no.path_features(features);
+                (yes.0 || no.0, yes.1 || no.1)
+            }
+            Self::Index(receiver, index) => {
+                receiver.path_features(features);
+                index.path_features(features);
+                (false, false)
+            }
+            _ => (false, false),
+        }
+    }
+
     fn eval(&self, vars: &HashMap<String, Value>) -> Result<Value, String> {
         match self {
             Self::Value(value) => Ok(value.clone()),
@@ -450,6 +510,7 @@ impl Expr {
                     .unwrap_or_default();
                 if let Expr::Name(class) = receiver.as_ref() {
                     return match (class.as_str(), name.as_str()) {
+                        ("Path", _) => paths::evaluate(name, args),
                         ("String" | "string", "IsNullOrEmpty") => {
                             Ok(Value::Bool(args[0].is_null() || text(&args[0])?.is_empty()))
                         }

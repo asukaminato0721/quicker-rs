@@ -479,3 +479,39 @@ On 2026-10-07, another download of the pinned author export matched SHA-256
 All four corpus tests passed. The report no longer lists list operations or
 comments as blockers. Other OpenCC modules, expressions, and Windows paths
 remain blocked. The complete OpenCC workflow was not executed.
+
+### Path expressions and OpenCC output files
+
+The path interpreter implements nine pure methods with Linux separators. Its
+rules follow the [.NET path implementation](https://github.com/dotnet/runtime/blob/v8.0.0/src/libraries/System.Private.CoreLib/src/System/IO/Path.cs)
+and [Unix path implementation](https://github.com/dotnet/runtime/blob/v8.0.0/src/libraries/System.Private.CoreLib/src/System/IO/Path.Unix.cs).
+Directory extraction compresses separator runs. Filename and extension methods
+retain text components. Dotfiles have an extension in these .NET methods.
+`Combine` preserves dot segments and resets at a later absolute component.
+It accepts multiple strings or one text list. No operation reads the filesystem.
+The methods reject Windows paths, NUL characters, and paths above 1 MiB.
+
+The string parser follows the [C# literal specification](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/language-specification/lexical-structure#6456-string-literals).
+Verbatim literals retain their contents and decode doubled quotes. Regular
+literals now use C# escapes instead of JSON escapes. Unicode surrogate pairs
+produce UTF-8 text. Unpaired surrogates produce errors. Character literals,
+interpolation, raw strings, and C# statement blocks remain unsupported.
+
+A separate C# program generated 234 Linux reference results using SDK 8.0.100
+and .NET 8.0.0. The SDK archive matched Microsoft's release-metadata SHA-512.
+The Rust interpreter matched all recorded results. The reference fixture and
+its generator are committed. Normal builds have no .NET dependency.
+
+The opt-in `downloaded_opencc_path_expressions_and_save_steps_execute_unchanged`
+test loads the pinned author export. It executes six original assignments and
+evaluates two original dialog/launcher inputs. Two original writes produce the
+expected UTF-8 files. The original input file remains unchanged. Two assignments
+produce paths with literal backslashes. Their values remain unchanged and the
+original write step rejects them. No file manager or dialog runs in this test.
+
+A fresh download on 2026-10-07 matched the pinned OpenCC hash. Preservation and
+all five corpus tests passed. The checker now reports two unsupported expression
+blocks, eight Linux path warnings, and two Windows literal warnings. Previously
+it reported ten unsupported expressions. The two statement blocks, other modules,
+and Windows commands still prevent full OpenCC execution. A syntax check does
+not establish that a path expression can run with every input value.

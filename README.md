@@ -124,6 +124,22 @@ error. The evaluator does not provide arbitrary C# code or .NET host APIs.
 It uses ordinal string matching. Case-insensitive ordinal matching currently
 requires ASCII text. Reports check expression syntax, but runtime types still need validation.
 
+Expressions support C# regular strings and verbatim strings (`@"text"`). Verbatim
+strings retain backslashes, doubled quotes, and line breaks. Regular strings
+support C# escapes, including `\x`, `\u`, and `\U`. Unpaired UTF-16 surrogates,
+character literals, interpolation, and raw string syntax remain unsupported.
+
+The pure `Path` methods are `GetDirectoryName`, `GetFileName`,
+`GetFileNameWithoutExtension`, `GetExtension`, `HasExtension`, `GetPathRoot`,
+`IsPathRooted`, `ChangeExtension`, and `Combine`. They use Linux path rules.
+They do not inspect the filesystem or resolve symlinks. Dot segments remain
+unchanged. `Combine` accepts text arguments or a text list. A later absolute
+component replaces earlier components. Paths have a 1 MiB limit. Windows drive
+paths, backslashes, and NUL characters produce errors in path methods.
+Literal concatenation retains backslashes and receives a compatibility warning
+when it constructs a path. Such output still requires replacement before file
+operations. Path constants and methods that access the environment remain unsupported.
+
 `sys:regexExtract` supports all-match values, the first match's groups, and
 per-group lists. It returns `matches` and `match1` through `match5`, including
 the trailing-space keys used by Quicker exports. Optional groups produce empty

@@ -250,8 +250,16 @@ fn visit(
                         .and_then(Value::as_str)
                         .filter(|s| s.trim_start().starts_with("$="))
                     {
-                        if let Err(error) = expression::validate(text) {
-                            issues.push(json!({"path": format!("{path}/{key}"), "code": "unsupported_expression", "severity": "blocker", "detail": error}));
+                        match expression::validate(text) {
+                            Err(error) => issues.push(json!({"path": format!("{path}/{key}"), "code": "unsupported_expression", "severity": "blocker", "detail": error})),
+                            Ok(features) => {
+                                if features.path_calls {
+                                    issue(issues, &format!("{path}/{key}"), "path_expression_uses_linux_semantics", "warning");
+                                }
+                                if features.windows_paths {
+                                    issue(issues, &format!("{path}/{key}"), "path_expression_contains_windows_path_literal", "warning");
+                                }
+                            }
                         }
                     }
                 }

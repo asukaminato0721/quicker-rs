@@ -417,6 +417,30 @@ establish completion of the port.
   tests passed. Clippy passed with warnings denied. Wasm compiled with 115
   preview dead-code warnings. No desktop code changed in this step.
 
+## Step 20: Linux path expressions and C# strings (2026-10-07)
+
+- Added nine pure Path methods with Linux separators and a 1 MiB path limit.
+  Preserved null results, .NET dotfile extensions, dot segments, and absolute
+  component replacement in Combine. Path methods reject Windows paths and NUL.
+  Filesystem and environment access remain outside the pure evaluator.
+- Added C# verbatim literals and corrected regular literals to use C# escapes.
+  Preserved backslashes, doubled quotes, line breaks, and Unicode pairs.
+  Unpaired surrogates, character literals, interpolation, and statement blocks
+  remain unsupported. Literal concatenation never rewrites backslashes.
+- Added expression diagnostics for Linux path rules and Windows literals.
+  Evaluated all eight original OpenCC path expressions, including six unchanged
+  assignment steps. Two original writes produced expected UTF-8 files. Two
+  Windows path constructions retained their values and failed native writes.
+- Generated 234 independent reference results with .NET 8.0.0 on Linux.
+  Verified SDK 8.0.100 against its published SHA-512. Committed the reference
+  dataset and C# generator. The Rust interpreter matched all results.
+- A fresh author-source OpenCC download matched its pinned hash. All five
+  corpus tests passed. Unsupported expression blocks fell from ten to two.
+  Other OpenCC blockers remain. The complete action was not executed.
+- Validation: 166 native tests passed, 12 opt-in tests ignored. All 17 Python
+  tests passed. Clippy passed with warnings denied. Wasm compiled with 116
+  preview dead-code warnings. The application has no new runtime dependency.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
