@@ -1,4 +1,5 @@
 pub(crate) mod compatibility;
+mod control_flow;
 mod expression;
 mod preservation;
 mod runner;
@@ -885,7 +886,7 @@ impl LowCodePluginStep {
                 Map::new(),
             )),
             Self::SimpleIf { condition, .. } => Ok(QuickerPluginStepDocument {
-                step_runner_key: "sys:simpleIf".into(),
+                step_runner_key: "sys:if".into(),
                 input_params: map_with_binding([("condition", condition.as_str())]),
                 output_params: Map::new(),
                 if_steps: None,
@@ -1605,7 +1606,7 @@ fn low_code_step_from_document(
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(0),
         }),
-        "sys:simpleIf" => Ok(LowCodePluginStep::SimpleIf {
+        "sys:simpleIf" | "sys:if" => Ok(LowCodePluginStep::SimpleIf {
             condition: binding_string(&step.input_params, "condition").unwrap_or_default(),
             if_steps: Vec::new(),
             else_steps: Vec::new(),
@@ -1977,6 +1978,8 @@ fn serialize_quicker_key_macro_steps(steps: &[LowCodeKeyMacroStep]) -> Result<St
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StepFlow {
     Continue,
+    BreakLoop,
+    NextIteration,
     Stop(Option<String>),
 }
 
@@ -2494,15 +2497,21 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "output", Value::String(output))?;
                 Ok(StepFlow::Continue)
             }
-            Some(runner::StepRunner::SimpleIf) => {
+            Some(runner::StepRunner::SimpleIf | runner::StepRunner::If) => {
                 let condition = self.input_value(&step.input_params, "condition")?;
                 let branch = if truthy(condition.as_ref()) {
                     step.if_steps.as_deref().unwrap_or(&[])
-                } else {
+                } else if step.step_runner_key == "sys:if" {
                     step.else_steps.as_deref().unwrap_or(&[])
+                } else {
+                    &[]
                 };
                 self.run_steps(branch)
             }
+            Some(runner::StepRunner::Repeat) => self.run_repeat(step),
+            Some(runner::StepRunner::Each) => self.run_each(step),
+            Some(runner::StepRunner::Break) => Ok(StepFlow::BreakLoop),
+            Some(runner::StepRunner::Continue) => Ok(StepFlow::NextIteration),
             Some(runner::StepRunner::Group) => {
                 self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))
             }
@@ -2706,6 +2715,9 @@ fn execute_quicker_plugin_steps(
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
             _ => ExecResult::Ok,
         },
+        Ok(StepFlow::BreakLoop | StepFlow::NextIteration) => {
+            ExecResult::Err("Loop control requires an enclosing loop".into())
+        }
         Err(err) => ExecResult::Err(err),
     }
 }

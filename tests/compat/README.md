@@ -55,7 +55,7 @@ python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --pu
 
 On 2026-10-06, the request downloaded `Ref->Ob` and matched the recorded SHA-256.
 All preservation checks passed. The runtime report returned `blocked` and exit code 1.
-It identified `sys:subprogram`, `sys:waitClipboardChange`, `sys:if`, and
+It identified `sys:subprogram`, `sys:waitClipboardChange`, and
 `sys:activateProcessMainWindow` as missing runners. The tool did not execute the action.
 
 Five other downloaded exports passed the same preservation checks.
@@ -80,3 +80,18 @@ The Rust tests check preservation and runtime diagnostics.
 The checker reports static evidence only. It does not validate all expressions,
 application dependencies, permissions, platform behavior, or unknown option semantics.
 Reports always set `runtime.executed` to `false`.
+
+## Control flow evidence
+
+Quicker.exe delegates its loop runners to managed closure methods. The repeat
+body at RVA `0x3f1094` writes `count` before it evaluates `stopCondition`.
+It reads the iteration limit and start index once. It checks the stop condition
+on each iteration. A count of -1 selects an unlimited loop.
+The sequential each body at RVA `0x3efbb8` writes the item and zero-based index
+before child steps. Both runners consume the nearest loop's break and continue.
+The if body at RVA `0x3f0ebc` selects either branch. The simpleIf body at
+RVA `0x3f18b4` only executes its true branch.
+
+Runtime tests check these orders with controlled workflows. They also check
+nested loops, typed items, stop propagation, invalid counters, and cancellation.
+These tests do not execute the downloaded actions' Windows applications.

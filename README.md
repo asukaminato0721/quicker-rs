@@ -124,6 +124,11 @@ error. The evaluator does not provide arbitrary C# code or .NET host APIs.
 It uses ordinal string matching. Case-insensitive ordinal matching currently
 requires ASCII text. Reports check expression syntax, but runtime types still need validation.
 
+Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:each`,
+`sys:break`, and `sys:continue`. Nested loops handle break, continue, stop, and
+cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.
+Parallel list execution is unsupported. Loop progress bars are not displayed.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |

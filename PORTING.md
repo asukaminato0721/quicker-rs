@@ -118,13 +118,30 @@ establish completion of the port.
 - Tests cover false branches, failed expressions, assignment failure outputs,
   the downloaded Citavi `IndexOf` condition, UTF-16 positions, and integer precision.
 
+## Step 6: Execute plugin branches and loops (2026-10-06)
+
+- Added `sys:if`, `sys:repeat`, sequential `sys:each`, `sys:break`, and
+  `sys:continue`. Checked execution order against managed bodies in the MSI.
+- Corrected `simpleIf` to execute only its true branch. New editor branches
+  emit `sys:if`. Imported documents retain their runner keys and metadata.
+- Added nested loop control, typed items, index outputs, stop conditions,
+  failure outputs, counter validation, and cancellation of unlimited loops.
+- Reports reject parallel each execution and loop control outside a loop.
+  They warn about loop progress displays, which remain unsupported.
+- Native tests: 91 passed, two opt-in tests ignored. Python tests: 11 passed.
+  Clippy passed with warnings denied. The six-file preservation test also passed.
+  Wasm check passed with dead-code warnings in the preview build.
+- Repeated the public ID download. Its hash matched. `Ref->Ob` still needs
+  subprograms, clipboard-change waits, and process window activation.
+  Preservation passes do not establish execution compatibility.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Implement missing modules found in real downloads. Prioritize conditionals,
-   loops, subprograms, clipboard waits, and selected text. Use the reports for
+1. Implement missing modules found in real downloads. Prioritize subprograms,
+   clipboard waits, and selected text. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument

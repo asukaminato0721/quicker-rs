@@ -48,7 +48,7 @@ pub(crate) fn inspect(input: &str) -> Value {
             Ok(data) => {
                 // Include subprograms and unknown containers, even when the typed
                 // runtime parser does not know their fields. Paths are JSON pointers.
-                visit(&data, "/Data", false, &mut steps, &mut issues);
+                visit(&data, "/Data", false, 0, &mut steps, &mut issues);
                 if data["LimitSingleInstance"] == true {
                     issue(
                         &mut issues,
@@ -160,6 +160,7 @@ fn visit(
     value: &Value,
     path: &str,
     disabled: bool,
+    loop_depth: usize,
     steps: &mut Vec<Value>,
     issues: &mut Vec<Value>,
 ) {
@@ -190,17 +191,46 @@ fn visit(
                         issues.push(json!({"path": path, "code": "unsupported_runner", "runner": key, "severity": "blocker"}));
                     } else {
                         check_options(value, path, key, issues);
+                        if matches!(key, "sys:break" | "sys:continue") && loop_depth == 0 {
+                            issue(issues, path, "loop_control_outside_loop", "blocker");
+                        }
                     }
                 }
             }
             for (key, child) in object {
+                let child_depth = if key == "SubPrograms" {
+                    0
+                } else if key == "IfSteps"
+                    && matches!(
+                        object.get("StepRunnerKey").and_then(Value::as_str),
+                        Some("sys:repeat" | "sys:each")
+                    )
+                {
+                    loop_depth + 1
+                } else {
+                    loop_depth
+                };
                 let key = key.replace('~', "~0").replace('/', "~1");
-                visit(child, &format!("{path}/{key}"), disabled, steps, issues);
+                visit(
+                    child,
+                    &format!("{path}/{key}"),
+                    disabled,
+                    child_depth,
+                    steps,
+                    issues,
+                );
             }
         }
         Value::Array(values) => {
             for (index, child) in values.iter().enumerate() {
-                visit(child, &format!("{path}/{index}"), disabled, steps, issues);
+                visit(
+                    child,
+                    &format!("{path}/{index}"),
+                    disabled,
+                    loop_depth,
+                    steps,
+                    issues,
+                );
             }
         }
         _ => {}
@@ -247,6 +277,31 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
     }
     if runner == "sys:reportProgress" {
         issue(issues, path, "progress_reporting_is_noop", "warning");
+    }
+    if runner == "sys:each" {
+        let binding = &step["InputParams"]["useMultiThread"];
+        let path = format!("{path}/InputParams/useMultiThread");
+        if binding["VarKey"].is_string()
+            || binding["Value"]
+                .as_str()
+                .is_some_and(|s| s.contains('{') || s.starts_with("$="))
+        {
+            issue(
+                issues,
+                &path,
+                "dynamic_option_requires_validation",
+                "warning",
+            );
+        } else if truthy(Some(&binding["Value"])) {
+            issue(issues, &path, "parallel_each_not_supported", "blocker");
+        }
+    }
+    if matches!(runner, "sys:each" | "sys:repeat") {
+        let binding = &step["InputParams"]["progressBarTitle"];
+        if binding["VarKey"].is_string() || binding["Value"].as_str().is_some_and(|s| !s.is_empty())
+        {
+            issue(issues, path, "loop_progress_not_displayed", "warning");
+        }
     }
 }
 
