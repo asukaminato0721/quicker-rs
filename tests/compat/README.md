@@ -402,3 +402,44 @@ encodings remain gaps. Reads expand process environment variables. Windows path
 normalization and zero-width character removal are not reproduced. Local text
 paths retain their whitespace. Writes can be partial after cancellation or an
 I/O error. Reports describe these limits and never claim full action execution.
+
+### File selection and real OpenCC save steps
+
+The file dialog runner follows `SelectFileStep.Execute` at `0x2fd370`, its
+closures at `0x4189f4` and `0x418db8`, and `AppHelper` methods at `0x107bd0`,
+`0x107d18`, and `0x107e58`. The
+[official module documentation](https://docs.getquicker.net/v2/xaction/modules/selectfile/)
+describes its modes and bindings. The MSI emits both path output slots on
+success and emits neither slot after cancellation. Tests preserve this behavior.
+
+Run the GUI check after `cargo build --locked`:
+
+```sh
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QT_QPA_PLATFORM=xcb GDK_DEBUG=no-portals GTK_USE_PORTAL=0 \
+  XDG_CURRENT_DESKTOP=X-Generic QUICKER_COMPAT_CORPUS=/path/to/json \
+  dbus-run-session -- python3 scripts/smoke-file-dialogs-x11.py kdialog
+```
+
+Repeat with `zenity`. Add `--with-wm` after the backend to start an isolated
+KWin X11 session. The test validates the EWMH above property. Under a window
+manager, it activates the panel before sending action cancellation and checks
+the actual input focus. Escape in the file chooser only cancels that selection.
+
+The test covers single/multiple selection, save paths, default extensions,
+overwrite refusal, failure outputs, and action cancellation. It includes
+Unicode, quotes, percent signs, vertical bars, and a newline in real filenames.
+Without `QUICKER_COMPAT_CORPUS`, it runs the authored workflow only. With that
+variable, it checks the pinned OpenCC hash and executes all four original file
+selectors plus the original writer, using temporary path variables. Both
+backends passed these original save steps. The full action remains blocked by
+other modules, expressions, and Windows commands.
+
+[KDialog's implementation](https://github.com/KDE/kdialog/blob/master/src/kdialog.cpp)
+returns file URLs for URL selection. The runner accepts local URLs only.
+[Zenity's file selection implementation](https://github.com/GNOME/zenity/blob/master/src/fileselection.c)
+accepts a separator for multiple paths. The runner uses a fresh random delimiter
+for each dialog. Native filters and automatic extensions can differ from Windows.
+Simple wildcard filters are supported. Exact-name and bracket-pattern filters
+are rejected. Local Qt/GTK dialogs keep cancellation within the managed process.
+Portal selection and native Wayland remain outside this verification.

@@ -311,6 +311,54 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:selectFile" {
+        issue(
+            issues,
+            path,
+            "requires_native_file_dialog_backend",
+            "warning",
+        );
+        issue(
+            issues,
+            path,
+            "file_dialog_extension_and_filter_behavior_depends_on_backend",
+            "warning",
+        );
+        let top = &step["InputParams"]["topMost"];
+        if top.is_null() || top["VarKey"].is_string() || truthy(Some(&top["Value"])) {
+            issue(
+                issues,
+                path,
+                "file_dialog_topmost_requires_x11_window_manager",
+                "warning",
+            );
+        }
+        for key in ["type", "filter", "defaultExt", "initDir", "initFileName"] {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if let Some(value) = binding["Value"].as_str() {
+                if !super::file_dialogs::validate_option(key, value) {
+                    issue(
+                        issues,
+                        &option_path,
+                        "unsupported_file_dialog_option",
+                        "blocker",
+                    );
+                }
+            }
+        }
+    }
     if matches!(runner, "sys:MsgBox" | "sys:userInput" | "sys:selectFolder") {
         issue(issues, path, "requires_native_dialog_backend", "warning");
         if runner == "sys:selectFolder" {

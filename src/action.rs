@@ -3,6 +3,7 @@ pub(crate) mod compatibility;
 mod control_flow;
 mod dialogs;
 mod expression;
+mod file_dialogs;
 mod file_selection;
 mod file_steps;
 mod key_steps;
@@ -2308,6 +2309,7 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::ReadFile) => self.run_read_file(step),
             Some(runner::StepRunner::WriteTextFile) => self.run_write_text_file(step),
+            Some(runner::StepRunner::SelectFile) => self.run_file_dialog(step),
             Some(runner::StepRunner::Imageinfo) => {
                 let path =
                     normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);

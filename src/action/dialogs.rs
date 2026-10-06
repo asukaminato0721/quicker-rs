@@ -221,13 +221,13 @@ impl QuickerRuntime {
     }
 }
 
-struct DialogSession {
+pub(super) struct DialogSession {
     control: Option<ActionExecutionControl>,
     previous: bool,
 }
 
 impl DialogSession {
-    fn new(control: Option<&ActionExecutionControl>) -> Self {
+    pub(super) fn new(control: Option<&ActionExecutionControl>) -> Self {
         let previous = control.is_some_and(|c| c.dialog_active.swap(true, Ordering::SeqCst));
         Self {
             control: control.cloned(),

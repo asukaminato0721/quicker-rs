@@ -363,6 +363,36 @@ establish completion of the port.
   `Ref->Ob` export downloaded and passed preservation. Its official dependency
   returned HTTP 401 and remains a reported runtime blocker.
 
+## Step 18: Native file selection and OpenCC save workflows (2026-10-07)
+
+- Checked `SelectFileStep`, its closures, and the three `AppHelper` file-dialog
+  methods in the MSI. Added `openFile`, `openMultiFile`, and `saveFile` runners.
+  Single/save selection returns a path. Multiple selection returns a list.
+  Success clears the inactive output slot. Failure retains previous path outputs.
+- Added filters, default filter selection, initial folders/names, default
+  extensions, and overwrite confirmation after extension insertion. The chooser
+  does not write a file. Unsupported paths and filter patterns produce errors.
+- Kept spaces, quotes, percent signs, separators, Unicode, and embedded newlines
+  in selected names. File URLs and a per-dialog random separator prevent ordinary
+  filename characters from becoming list delimiters. Captured output is bounded.
+- Managed child processes close on action cancellation. Local Qt/GTK choosers
+  avoid portal processes that cannot share that cancellation. Added an X11
+  above hint for `topMost`, which defaults to true. Wayland requires
+  `topMost=false` and remains unverified. Native filter/extension rules can differ
+  from Windows. File selection retains JSON editor cards.
+- Real kdialog and zenity tests passed single/multiple/save paths, Unicode and
+  newline filenames, extension insertion, overwrite refusal, user cancellation,
+  and action cancellation. KWin X11 also passed the above hint and action
+  cancellation after activating the panel through the window manager.
+- Executed all four unchanged `selectFile` steps from the pinned OpenCC export
+  on both backends. Each used its original `WriteTextFile` step to write the
+  expected UTF-8 content. Only input variables received temporary native paths.
+  This is evidence for the save portion, not the full Windows OpenCC workflow.
+- Final checks: 151 native tests and 17 Python tests passed. All three corpus
+  tests passed, including preservation of seven downloaded actions. Clippy
+  passed with warnings denied. Wasm compiled with preview dead-code warnings.
+  Added both file-dialog smoke commands to CI. Remote CI remains unverified.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

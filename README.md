@@ -167,7 +167,21 @@ window behavior remain unsupported. The checker reports these options.
 `sys:selectFolder` uses `initDir` and clears its path after a failed selection.
 It does not list open file manager windows. Both modules default `stopIfFail` to true.
 
-All three Linux dialog modules respond to action cancellation. They stop the
+`sys:selectFile` supports `openFile`, `openMultiFile`, and `saveFile`. It returns
+`path` for single-file/save selection and `pathList` for multiple files.
+Filters, initial paths, initial filenames, and default extensions are supported.
+The module selects the first filter that matches `defaultExt`. Native filter
+matching and extension insertion can differ from Windows. If the backend returns
+a save path without an extension, the module adds `defaultExt`. It asks before
+replacing a file at that adjusted path. Selection itself never writes the file.
+Failed selection retains previous path outputs and sets `isSuccess=false`.
+Missing `stopIfFail` and `topMost` both default to true. Set `topMost=false` on
+Wayland. On X11, the window manager handles the EWMH above hint.
+The module uses local Qt/GTK windows so action cancellation can close them.
+Remote URLs and Windows initial paths are unsupported. Filter patterns must
+contain `*` and cannot contain spaces, brackets, or parentheses.
+
+All four Linux dialog modules respond to action cancellation. They stop the
 managed dialog process and do not continue the workflow after cancellation.
 Focus restoration requires X11. Disable `restoreFocus` on native Wayland.
 The X11 tests cover local kdialog and zenity windows. Desktop portal dialogs

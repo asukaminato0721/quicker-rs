@@ -19,6 +19,8 @@ xcb::atoms_struct! {
         client_list => b"_NET_CLIENT_LIST" only_if_exists = false,
         title => b"_NET_WM_NAME" only_if_exists = false,
         utf8 => b"UTF8_STRING" only_if_exists = false,
+        state => b"_NET_WM_STATE" only_if_exists = false,
+        above => b"_NET_WM_STATE_ABOVE" only_if_exists = false,
     }
 }
 
@@ -101,6 +103,62 @@ impl Desktop {
 pub fn is_wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland")
+}
+
+/// Set the EWMH above hint only on a window owned by the dialog child.
+pub(crate) fn dialog_above(window: u32, pid: u32) -> Result<(), String> {
+    let desktop = Desktop::connect()?;
+    let window = x::Window::new(window);
+    if desktop.pid(window) != pid {
+        return Err("File dialog window changed its owner".into());
+    }
+    let managed = desktop
+        .property(desktop.root, desktop.atoms.wm_check, x::ATOM_WINDOW)
+        .is_ok_and(|p| p.format() == 32 && !p.value::<x::Window>().is_empty());
+    if managed {
+        let event = x::ClientMessageEvent::new(
+            window,
+            desktop.atoms.state,
+            x::ClientMessageData::Data32([1, desktop.atoms.above.resource_id(), 0, 1, 0]),
+        );
+        desktop
+            .conn
+            .send_and_check_request(&x::SendEvent {
+                propagate: false,
+                destination: x::SendEventDest::Window(desktop.root),
+                event_mask: x::EventMask::SUBSTRUCTURE_REDIRECT | x::EventMask::SUBSTRUCTURE_NOTIFY,
+                event: &event,
+            })
+            .map_err(|e| e.to_string())?;
+    } else {
+        let mut states = desktop
+            .property(window, desktop.atoms.state, x::ATOM_ATOM)
+            .ok()
+            .filter(|p| p.format() == 32)
+            .map(|p| p.value::<x::Atom>().to_vec())
+            .unwrap_or_default();
+        if !states.contains(&desktop.atoms.above) {
+            states.push(desktop.atoms.above);
+        }
+        desktop
+            .conn
+            .send_and_check_request(&x::ChangeProperty {
+                mode: x::PropMode::Replace,
+                window,
+                property: desktop.atoms.state,
+                r#type: x::ATOM_ATOM,
+                data: &states,
+            })
+            .map_err(|e| e.to_string())?;
+        desktop
+            .conn
+            .send_and_check_request(&x::ConfigureWindow {
+                window,
+                value_list: &[x::ConfigWindow::StackMode(x::StackMode::Above)],
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    desktop.conn.flush().map_err(|e| e.to_string())
 }
 
 pub fn focused_process() -> Option<FocusedProcess> {

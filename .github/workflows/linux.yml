@@ -13,7 +13,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool xterm imagemagick fonts-noto-cjk dolphin dbus-x11 kdialog zenity
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool x11-utils xterm imagemagick fonts-noto-cjk dolphin dbus-x11 kdialog zenity
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all-targets --locked
@@ -22,6 +22,8 @@ jobs:
       - run: python3 scripts/test-check-shared-action.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb GDK_DEBUG=no-portals GTK_USE_PORTAL=0 XDG_CURRENT_DESKTOP=X-Generic dbus-run-session -- python3 scripts/smoke-dialogs-x11.py kdialog
       - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb GDK_DEBUG=no-portals GTK_USE_PORTAL=0 XDG_CURRENT_DESKTOP=X-Generic dbus-run-session -- python3 scripts/smoke-dialogs-x11.py zenity
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb GDK_DEBUG=no-portals GTK_USE_PORTAL=0 XDG_CURRENT_DESKTOP=X-Generic dbus-run-session -- python3 scripts/smoke-file-dialogs-x11.py kdialog
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb GDK_DEBUG=no-portals GTK_USE_PORTAL=0 XDG_CURRENT_DESKTOP=X-Generic dbus-run-session -- python3 scripts/smoke-file-dialogs-x11.py zenity
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --key-operation

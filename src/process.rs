@@ -130,9 +130,19 @@ pub fn detached(
 
 #[cfg(unix)]
 pub fn output_with_pid(
+    command: Command,
+    control: Option<&ActionExecutionControl>,
+    context: &str,
+) -> Result<(u32, Output), String> {
+    output_with_monitor(command, control, context, |_| Ok(()))
+}
+
+#[cfg(unix)]
+pub(crate) fn output_with_monitor(
     mut command: Command,
     control: Option<&ActionExecutionControl>,
     context: &str,
+    mut monitor: impl FnMut(u32) -> Result<(), String>,
 ) -> Result<(u32, Output), String> {
     if control.is_some_and(ActionExecutionControl::is_cancelled) {
         return Err("Action cancelled".into());
@@ -152,6 +162,10 @@ pub fn output_with_pid(
     let (mut out_truncated, mut err_truncated) = (false, false);
     let status = loop {
         check_cancel(&mut child, control)?;
+        if let Err(error) = monitor(child.id()) {
+            terminate(&mut child);
+            return Err(error);
+        }
         let read = drain(&mut stdout, &mut out, &mut out_truncated)
             .and_then(|_| drain(&mut stderr, &mut err, &mut err_truncated));
         if let Err(error) = read {
@@ -232,6 +246,19 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script);
         cmd
+    }
+
+    #[test]
+    fn monitor_error_terminates_and_reaps_the_managed_child() {
+        let mut pid = 0;
+        let result = output_with_monitor(shell("sleep 30"), None, "monitor test", |child_pid| {
+            pid = child_pid;
+            Err("Monitor failed".into())
+        });
+        assert_eq!(result.unwrap_err(), "Monitor failed");
+        assert!(pid > 0);
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]
