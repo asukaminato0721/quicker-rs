@@ -1,4 +1,6 @@
+pub(crate) mod compatibility;
 mod preservation;
+mod runner;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::process::{output as run_command_for_output, status as run_command_for_status};
@@ -2028,14 +2030,14 @@ impl QuickerRuntime {
     }
 
     fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
-        match step.step_runner_key.as_str() {
-            "sys:openUrl" => {
+        match runner::StepRunner::from_key(&step.step_runner_key) {
+            Some(runner::StepRunner::OpenUrl) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 open_target(&url)
                     .map_err(|err| format!("Failed to open URL '{}': {}", url, err))?;
                 Ok(StepFlow::Continue)
             }
-            "sys:stateStorage" => {
+            Some(runner::StepRunner::StateStorage) => {
                 let mode = self
                     .input_string_opt(&step.input_params, "type")
                     .unwrap_or_default();
@@ -2068,7 +2070,7 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported stateStorage type: {other}")),
                 }
             }
-            "sys:MsgBox" => {
+            Some(runner::StepRunner::MsgBox) => {
                 let title = self
                     .input_string_opt(&step.input_params, "title")
                     .unwrap_or_default();
@@ -2077,7 +2079,7 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "okOrYes", Value::Bool(true));
                 Ok(StepFlow::Continue)
             }
-            "sys:selectFolder" => {
+            Some(runner::StepRunner::SelectFolder) => {
                 let prompt = self
                     .input_string_opt(&step.input_params, "prompt")
                     .unwrap_or_default();
@@ -2099,7 +2101,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:userInput" => {
+            Some(runner::StepRunner::UserInput) => {
                 let prompt = self
                     .input_string_opt(&step.input_params, "prompt")
                     .unwrap_or_default();
@@ -2129,7 +2131,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:delay" => {
+            Some(runner::StepRunner::Delay) => {
                 let delay_ms = self
                     .input_string_opt(&step.input_params, "delayMs")
                     .and_then(|value| value.parse::<u64>().ok())
@@ -2137,7 +2139,7 @@ impl QuickerRuntime {
                 sleep_millis(delay_ms, self.control.as_ref())?;
                 Ok(StepFlow::Continue)
             }
-            "sys:keyInput" => {
+            Some(runner::StepRunner::KeyInput) => {
                 let keys = self.input_string(&step.input_params, "keys")?;
                 let payload: QuickerKeyInput = serde_json::from_str(&keys)
                     .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
@@ -2155,7 +2157,7 @@ impl QuickerRuntime {
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:getClipboardText" => {
+            Some(runner::StepRunner::GetClipboardText) => {
                 let format = self
                     .input_string_opt(&step.input_params, "format")
                     .unwrap_or_else(|| "UnicodeText".into());
@@ -2181,7 +2183,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:writeClipboard" => {
+            Some(runner::StepRunner::WriteClipboard) => {
                 let clipboard_type = self
                     .input_string_opt(&step.input_params, "type")
                     .unwrap_or_else(|| "auto".into())
@@ -2213,7 +2215,7 @@ impl QuickerRuntime {
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:regexExtract" => {
+            Some(runner::StepRunner::RegexExtract) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let pattern = self.input_string(&step.input_params, "pattern")?;
                 let get_group = self
@@ -2252,7 +2254,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:stringProcess" => {
+            Some(runner::StepRunner::StringProcess) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let method = self
                     .input_string_opt(&step.input_params, "method")
@@ -2266,7 +2268,7 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
                 Ok(StepFlow::Continue)
             }
-            "sys:download" => {
+            Some(runner::StepRunner::Download) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 let save_path = self.input_string(&step.input_params, "savePath")?;
                 let save_name = self
@@ -2308,7 +2310,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:readFile" => {
+            Some(runner::StepRunner::ReadFile) => {
                 let path = normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
                 let file_type = self
@@ -2337,7 +2339,7 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported readFile type: {other}")),
                 }
             }
-            "sys:imageinfo" => {
+            Some(runner::StepRunner::Imageinfo) => {
                 let path =
                     normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);
                 let bytes = read_binary_file(&path)?;
@@ -2354,7 +2356,7 @@ impl QuickerRuntime {
                 );
                 Ok(StepFlow::Continue)
             }
-            "sys:imgToBase64" => {
+            Some(runner::StepRunner::ImgToBase64) => {
                 let path = normalize_runtime_path(&self.input_string(&step.input_params, "img")?);
                 let bytes = read_binary_file(&path)?;
                 self.assign_output(
@@ -2364,7 +2366,7 @@ impl QuickerRuntime {
                 );
                 Ok(StepFlow::Continue)
             }
-            "sys:fileOperation" => {
+            Some(runner::StepRunner::FileOperation) => {
                 let op = self
                     .input_string_opt(&step.input_params, "type")
                     .unwrap_or_default();
@@ -2399,7 +2401,7 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported fileOperation type: {other}")),
                 }
             }
-            "sys:splitString" => {
+            Some(runner::StepRunner::SplitString) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let separator = self
                     .input_string_opt(&step.input_params, "separator")
@@ -2418,7 +2420,7 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "output", Value::Array(values));
                 Ok(StepFlow::Continue)
             }
-            "sys:assign" => {
+            Some(runner::StepRunner::Assign) => {
                 let input = self.input_string(&step.input_params, "input")?;
                 let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
                 match self.eval_assign_expression(&input) {
@@ -2437,7 +2439,7 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:strReplace" => {
+            Some(runner::StepRunner::StrReplace) => {
                 let input = self.input_string(&step.input_params, "input")?;
                 let old = self
                     .input_string_opt(&step.input_params, "old")
@@ -2470,7 +2472,7 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "output", Value::String(output));
                 Ok(StepFlow::Continue)
             }
-            "sys:simpleIf" => {
+            Some(runner::StepRunner::SimpleIf) => {
                 let condition = self.input_value(&step.input_params, "condition");
                 let branch = if truthy(condition.as_ref()) {
                     step.if_steps.as_deref().unwrap_or(&[])
@@ -2479,8 +2481,10 @@ impl QuickerRuntime {
                 };
                 self.run_steps(branch)
             }
-            "sys:group" => self.run_steps(step.if_steps.as_deref().unwrap_or(&[])),
-            "sys:stop" => {
+            Some(runner::StepRunner::Group) => {
+                self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))
+            }
+            Some(runner::StepRunner::Stop) => {
                 let is_error = self.input_bool(&step.input_params, "isError");
                 let message = self.input_string_opt(&step.input_params, "showMessage");
                 if is_error {
@@ -2489,7 +2493,7 @@ impl QuickerRuntime {
                     Ok(StepFlow::Stop(message))
                 }
             }
-            "sys:formatString" => {
+            Some(runner::StepRunner::FormatString) => {
                 let format_string = self
                     .input_string_opt(&step.input_params, "formatString")
                     .unwrap_or_default();
@@ -2503,14 +2507,14 @@ impl QuickerRuntime {
                 self.assign_output(&step.output_params, "output", Value::String(output));
                 Ok(StepFlow::Continue)
             }
-            "sys:notify" => {
+            Some(runner::StepRunner::Notify) => {
                 if let Some(message) = self.input_string_opt(&step.input_params, "msg") {
                     self.last_message = Some(message);
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:reportProgress" => Ok(StepFlow::Continue),
-            "sys:outputText" => {
+            Some(runner::StepRunner::ReportProgress) => Ok(StepFlow::Continue),
+            Some(runner::StepRunner::OutputText) => {
                 let content = self.input_string(&step.input_params, "content")?;
                 let method = self
                     .input_string_opt(&step.input_params, "method")
@@ -2540,7 +2544,10 @@ impl QuickerRuntime {
 
                 Ok(StepFlow::Continue)
             }
-            other => Err(format!("Unsupported Quicker step: {other}")),
+            None => Err(format!(
+                "Unsupported Quicker step: {}",
+                step.step_runner_key
+            )),
         }
     }
 

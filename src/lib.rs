@@ -16,13 +16,44 @@ use app::QuickerApp;
 #[cfg(not(target_arch = "wasm32"))]
 use config::Config;
 
+/// Check an exported action without opening a window or executing its steps.
+/// Returns a JSON report and a CI exit code (0: no known gaps, 1: gaps, 2: invalid).
+pub fn check_plugin_json(input: &str) -> (serde_json::Value, i32) {
+    let report = action::compatibility::inspect(input);
+    let code = action::compatibility::exit_code(&report);
+    (report, code)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn check_plugin_file(path: &std::path::Path) -> (serde_json::Value, i32) {
+    use std::io::Read;
+    const LIMIT: u64 = 16 * 1024 * 1024;
+    let result = (|| {
+        let mut input = String::new();
+        std::fs::File::open(path)?
+            .take(LIMIT + 1)
+            .read_to_string(&mut input)?;
+        if input.len() as u64 > LIMIT {
+            return Err(std::io::Error::other("Plugin exceeds 16 MiB limit"));
+        }
+        Ok(input)
+    })();
+    match result {
+        Ok(input) => check_plugin_json(&input),
+        Err(error) => (
+            serde_json::json!({"schema_version": 1, "import": {"status": "error", "error": error.to_string()}}),
+            2,
+        ),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("Quicker-RS\nUsage: quicker-rs [--show | --toggle | --hide | --hidden | --quit | --check-config]\n\nRun again to show the existing panel. On Wayland, bind quicker-rs --toggle\nto a shortcut in your desktop settings. --hidden starts in the background.");
+        println!("Quicker-RS\nUsage: quicker-rs [--show | --toggle | --hide | --hidden | --quit | --check-config]\n       quicker-rs --check-plugin FILE\n\n--check-plugin prints a JSON compatibility report without executing the action.\nExit codes: 0 = no known static gaps, 1 = gaps, 2 = invalid input.\nRun again to show the existing panel. On Wayland, bind quicker-rs --toggle\nto a shortcut in your desktop settings. --hidden starts in the background.");
         return Ok(());
     }
     if args.len() > 1

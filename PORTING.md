@@ -90,13 +90,30 @@ establish completion of the port.
 - Repeat against downloaded JSON files with `QUICKER_COMPAT_CORPUS=/path/to/json
   cargo test downloaded_actions_round_trip_without_data_loss -- --ignored`.
 
+## Step 4: Download and inspect actions by ID (2026-10-06)
+
+- Added `scripts/check-shared-action.py` for shared IDs, official URLs, and local
+  exports. It stores the response, action document, source hash, and JSON report.
+- Added `--check-plugin FILE` and Rust interfaces. The report checks preservation
+  and lists missing runners with their paths. Execution and inspection share the
+  runner mapping. The checker does not execute actions.
+- Verified API route, Bearer authentication, and `ApiResult<SharedActionDto>`
+  against MSI assemblies. Anonymous official download returned HTTP 401.
+- Downloaded the pinned public `Ref->Ob` export by its shared ID. Its hash and ID
+  matched. Preservation passed. Runtime inspection identified missing modules.
+  Repeated the checks on all six downloaded exports with the same distinction.
+- Native tests: 74 passed, two opt-in tests ignored. Python tests: 11 passed.
+  Native Clippy passed with warnings denied. Wasm check passed with existing warnings.
+- See `tests/compat/README.md` for reproduction steps and limits.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Download actions by ID and produce reproducible compatibility reports using
-   the production importer, editor, and an explicit runtime capability inventory.
+1. Implement missing modules found in real downloads. Prioritize conditionals,
+   loops, subprograms, clipboard waits, and selected text. Use the reports for
+   regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument
    parsing, and focused end-to-end tests of representative plugins.

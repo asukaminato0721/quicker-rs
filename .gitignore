@@ -1,2 +1,4 @@
 /target
 /dist
+/.compat
+__pycache__/

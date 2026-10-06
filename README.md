@@ -39,6 +39,7 @@ Launching a second instance shows the existing panel. Supported commands:
 | `--hidden` or `--hide` | Start hidden, or hide an existing panel |
 | `--quit` | Exit the existing instance |
 | `--check-config` | Validate configuration without opening a window |
+| `--check-plugin FILE` | Print a JSON compatibility report without executing the action |
 
 On Linux, closing the window or pressing Escape at the panel root hides it.
 Use **Quit** or `--quit` to exit. Escape during execution cancels the action.
@@ -72,6 +73,61 @@ Basic actions support JSON import/export. The Quicker builder also exports
 JSON. Imported documents retain unknown metadata, variables, subprograms, and
 step options during visual editing. Unsupported steps remain editable JSON
 cards. Preserving a step does not mean its runner is implemented on Linux.
+
+## Check a shared action
+
+Build the checker:
+
+```sh
+cargo build --locked
+```
+
+Download an action by shared ID or official share URL:
+
+```sh
+python3 scripts/check-shared-action.py 5e25bcf4-5a00-4272-eba7-08dd74a9f021 --revision 1
+```
+
+The official API requires authentication. Set `QUICKER_API_TOKEN` in your local
+environment before this command. The tool sends it as a Bearer token to the
+official API. It excludes the token from reports and the checker environment.
+An anonymous request returned HTTP 401 during verification.
+
+To check the recorded public author export without authentication:
+
+```sh
+python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --public-export
+```
+
+This sample comes from the author's GitHub repository. The tool checks its
+commit, SHA-256, and `SharedActionId`. It reports this source separately from the
+official API. The sample currently returns code 1 because it needs missing modules.
+The public registry contains one shared ID. It is not a mirror of the action store.
+
+To check a local export:
+
+```sh
+python3 scripts/check-shared-action.py --file /path/to/action.json
+# Direct Rust interface, without artifact storage:
+./target/debug/quicker-rs --check-plugin /path/to/action.json
+```
+
+The report checks import, export, editor save, and a title-only edit. It lists
+step runners and selected unsupported options, including nested steps and subprograms.
+Disabled branches do not create runtime blockers. The checker never executes
+the imported action. Runner availability does not prove compatible behavior.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |
+| 1 | The report found a preservation failure or a runtime blocker. |
+| 2 | Input, download, authentication, or checker failure. |
+
+The Python tool stores `response.json`, `action.json`, `source.json`, and
+`report.json` under `.compat/<id>/<response-sha256>/`. Use `--output-dir` to change
+this location. Use `--binary` to select a release build. Rust callers can use
+`quicker_rs::check_plugin_json` or `quicker_rs::check_plugin_file`.
+See [the compatibility evidence](tests/compat/README.md) for API details and test results.
 
 ## Configuration
 
