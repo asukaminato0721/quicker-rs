@@ -316,6 +316,38 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             );
         }
     }
+    if runner == "sys:activateProcessMainWindow" {
+        issue(
+            issues,
+            path,
+            "requires_x11_matching_application_window",
+            "warning",
+        );
+        for key in ["hotkey", "className", "windowTitle"] {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            let value = binding["Value"].as_str().unwrap_or_default();
+            if binding["VarKey"].is_string() || value.trim_start().starts_with("$=") {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !value.is_empty() {
+                let valid = if key == "hotkey" {
+                    window_steps::activation_hotkey(value).map(|_| ())
+                } else {
+                    fancy_regex::Regex::new(value)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                };
+                if let Err(error) = valid {
+                    issues.push(json!({"path": option_path, "code": "unsupported_option", "detail": error, "severity": "blocker"}));
+                }
+            }
+        }
+    }
     if runner == "sys:each" {
         let binding = &step["InputParams"]["useMultiThread"];
         let path = format!("{path}/InputParams/useMultiThread");

@@ -28,3 +28,5 @@ jobs:
       - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test focused_selection_rejects_primary_owned_by_another_window -- --ignored
       - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test clipboard_wait_cancels_while_waiting -- --ignored
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-clipboard-x11.py
+      - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test window_query_filters_before_focus_and_returns_window_metadata -- --ignored
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-window-x11.py

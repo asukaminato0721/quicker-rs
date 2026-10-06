@@ -55,8 +55,7 @@ python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --pu
 
 On 2026-10-06, the request downloaded `Ref->Ob` and matched the recorded SHA-256.
 All preservation checks passed. The runtime report returned `blocked` and exit code 1.
-It identified `sys:subprogram` and
-`sys:activateProcessMainWindow` as missing runners. The tool did not execute the action.
+It identified `sys:subprogram` as a missing runner. The tool did not execute the action.
 
 Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
@@ -119,3 +118,25 @@ xvfb-run -a python3 scripts/smoke-clipboard-x11.py
 The workflow test requires Xvfb, xterm, xdotool, and ImageMagick for failure
 screenshots. Xterm has a test-specific Ctrl+C copy binding. The test uses actual
 keyboard input, clipboard ownership, clipboard data, and the launcher UI.
+
+## Window activation evidence
+
+The MSI `ActivateProcessMainWindowStep.Execute` delegates to RVA `0x3fa1a0`.
+It reads process name/PID, window class, title, path, and hotkey inputs.
+The implementation searches for a process window, starts a missing program when
+a path is supplied, and can send an activation hotkey. Output helpers return
+PID, window handle, and title.
+
+The Linux implementation searches EWMH client windows. A bare X server uses
+root children. Matching windows must satisfy both class and title filters.
+It uses the existing focus verifier after each activation request.
+
+```sh
+xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test window_query_filters_before_focus_and_returns_window_metadata -- --ignored
+xvfb-run -a python3 scripts/smoke-window-x11.py
+```
+
+The workflow test checks two existing xterm windows, exact keyboard recipients,
+failure outputs, and a program launched through a path with spaces. Its
+`--minimized` mode requires a window manager. That mode passed with KWin in an
+isolated Xvfb/D-Bus session. Application-specific tray hotkeys still need testing.

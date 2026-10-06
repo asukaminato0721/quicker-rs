@@ -3,12 +3,18 @@ use crate::action::ActionExecutionControl;
 use crate::focus::FocusedProcess;
 use std::time::{Duration, Instant};
 use xcb::{x, Xid, XidNew};
+mod windows;
+pub(crate) use windows::{WindowMatch, WindowQuery};
 
 xcb::atoms_struct! {
     struct Atoms {
-        pid => b"_NET_WM_PID",
-        active => b"_NET_ACTIVE_WINDOW",
-        wm_check => b"_NET_SUPPORTING_WM_CHECK",
+        pid => b"_NET_WM_PID" only_if_exists = false,
+        active => b"_NET_ACTIVE_WINDOW" only_if_exists = false,
+        wm_check => b"_NET_SUPPORTING_WM_CHECK" only_if_exists = false,
+        clients => b"_NET_CLIENT_LIST_STACKING" only_if_exists = false,
+        client_list => b"_NET_CLIENT_LIST" only_if_exists = false,
+        title => b"_NET_WM_NAME" only_if_exists = false,
+        utf8 => b"UTF8_STRING" only_if_exists = false,
     }
 }
 

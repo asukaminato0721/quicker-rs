@@ -155,13 +155,35 @@ establish completion of the port.
   lack only subprogram and process-window activation runners. Other runtime
   dependencies and option semantics still need validation.
 
+## Step 8: Activate application windows on X11 (2026-10-07)
+
+- Added `sys:activateProcessMainWindow`. It matches a process name, executable
+  path, or PID and applies optional window class and title regular expressions.
+  It verifies focus and returns the process ID, window handle, and title.
+- Added program launch when the process is absent, a single SendKeys hotkey
+  fallback, bounded waits, failure outputs, and cancellation. Native Wayland
+  reports an unsupported backend. Application tray hotkeys still need testing.
+- Checked input fields and execution behavior against the MSI and official
+  module documentation. Reports flag invalid literal options and runtime
+  requirements. Inspection does not execute actions.
+- Native tests: 98 passed, six opt-in tests ignored. The window query opt-in test
+  passed separately. The launcher test used two real windows and verified that
+  input reached only the selected window. Program launch with spaces in its path
+  also passed. The same test passed with KWin and a minimized target window.
+- Python tests: 11 passed. Clippy passed with warnings denied. Wasm check passed
+  with preview dead-code warnings. Added the X11 window checks to CI.
+- Downloaded the public `Ref->Ob` action again by ID. Its hash matched. All six
+  downloaded exports passed preservation checks. The five Citavi actions now
+  lack only the subprogram runner. QuickLook still lacks selected-file, key-operation,
+  and run runners. These checks do not establish execution of Windows applications.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
 1. Implement missing modules found in real downloads. Prioritize subprograms,
-   process-window activation, and selected files. Use the reports for
+   selected files, key operations, and run. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument

@@ -6,6 +6,7 @@ mod preservation;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
+mod window_steps;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::process::{output as run_command_for_output, status as run_command_for_status};
@@ -2210,6 +2211,7 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::WaitClipboardChange) => self.run_wait_clipboard(step),
             Some(runner::StepRunner::GetSelectedText) => self.run_selected_text(step),
+            Some(runner::StepRunner::ActivateProcessMainWindow) => self.run_activate_window(step),
             Some(runner::StepRunner::WriteClipboard) => {
                 let clipboard_type = self
                     .input_string_opt(&step.input_params, "type")?

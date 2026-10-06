@@ -138,6 +138,15 @@ trimming, and URL encoding. They do not return a source URL.
 UI Automation, action-parameter text, wait-window monitoring, and native Wayland
 clipboard events remain unsupported and are reported by the checker.
 
+`sys:activateProcessMainWindow` supports X11 window activation by PID, executable
+name/path, or application class. Class and title filters use regular expressions.
+It verifies focus before returning PID, window ID, and title outputs. It can
+start a missing application from an executable path, or send a tray activation
+hotkey. The hotkey accepts one .NET SendKeys chord, such as `^%q` or `+{F12}`.
+Program paths are executable paths without shell arguments. Startup waits up to
+five seconds. Hotkey activation waits up to one second. Native Wayland window
+activation remains unsupported.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |
