@@ -323,6 +323,77 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:delay" {
+        let binding = &step["InputParams"]["delayMs"];
+        let option_path = format!("{path}/InputParams/delayMs");
+        if binding["VarKey"].is_string()
+            || binding["Value"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+        {
+            issue(
+                issues,
+                &option_path,
+                "dynamic_option_requires_validation",
+                "warning",
+            );
+        } else if !binding["Value"].is_null()
+            && wait_window::delay_millis(&binding["Value"]).is_err()
+        {
+            issue(issues, &option_path, "invalid_delay_integer", "blocker");
+        }
+    }
+    if runner == "sys:showWaitWin" {
+        let dynamic = |binding: &Value| {
+            binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+        };
+        let binding = &step["InputParams"]["mode"];
+        let mode = binding["Value"].as_str().unwrap_or("show");
+        let unknown_mode = dynamic(binding);
+        let mut keys = vec!["mode"];
+        if unknown_mode || matches!(mode, "show" | "update" | "showAndWaitClose") {
+            keys.extend_from_slice(wait_window::CONTENT_OPTIONS);
+        }
+        if unknown_mode || matches!(mode, "show" | "showAndWaitClose") {
+            keys.extend_from_slice(wait_window::WINDOW_OPTIONS);
+        }
+        for key in keys {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if dynamic(binding) || (unknown_mode && key != "mode") {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !binding["Value"].is_null()
+                && !wait_window::validate_option(key, &binding["Value"])
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "unsupported_wait_window_option",
+                    "blocker",
+                );
+            }
+        }
+        issue(
+            issues,
+            path,
+            "wait_window_requires_native_x11_application",
+            "warning",
+        );
+        issue(
+            issues,
+            path,
+            "wait_window_uses_desktop_workarea_not_individual_monitors",
+            "warning",
+        );
+    }
     if runner == "sys:showText" {
         issue(
             issues,
@@ -1032,10 +1103,10 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
     }
     if matches!(runner, "sys:waitClipboardChange" | "sys:getSelectedText") {
         issue(issues, path, "requires_x11_clipboard_events", "warning");
-        let keys: &[&str] = if runner == "sys:waitClipboardChange" {
-            &["monitorWaitWin"]
-        } else {
+        let keys: &[&str] = if runner == "sys:getSelectedText" {
             &["tryNoClipboard", "useActionParam"]
+        } else {
+            &[]
         };
         for key in keys {
             let binding = &step["InputParams"][key];

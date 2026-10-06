@@ -239,6 +239,31 @@ The checker reports those requests as blockers. The X11 test executes all three
 active OpenCC text-window steps without changes. Native Wayland window behavior
 still needs validation. Complex C# expression execution is deferred.
 
+`sys:showWaitWin` supports show, update, check, close, waitClose, and
+showAndWaitClose in the native X11 application. A root action and its subprograms
+share one window. Showing an existing window updates its content. Updating a
+missing window does nothing. Windows close when their root action ends.
+The module returns closure status and plain button values. Buttons and
+programmatic closure continue the action. With `stopActionIfClose=true`, the
+close button and automatic timeout stop the action, matching the inspected MSI.
+Set this option to false when a timeout must continue execution.
+
+Wait windows support progress, negative countdown values, font size, automatic
+closure, all three activation modes, and position reuse within an action.
+Placement uses the X11 desktop workarea, not individual monitor boundaries.
+Plain buttons remain accessible when the prompt needs scrolling. Limits are
+32 windows, 64 KiB per text field, 32 buttons, and a one-day automatic timeout.
+Markdown help, icons, rich button syntax, Windows taskbar progress, and native
+Wayland placement/focus remain unsupported. The checker identifies unsupported
+options. Selection windows and complex C# execution remain deferred.
+
+With `monitorWaitWin=true`, a delay ends when the window closes, including when
+no window exists. Clipboard waits monitor only a window that exists at entry.
+Closure before a clipboard change returns failure and obeys `stopIfFail`.
+Action cancellation always stops execution. Delay values require 32-bit integers.
+A missing value defaults to 100 ms. Empty text, zero, and negative values continue
+immediately.
+
 Control flow supports `sys:if`, `sys:simpleIf`, `sys:repeat`, sequential `sys:each`,
 `sys:break`, and `sys:continue`. Nested loops handle break, continue, stop, and
 cancellation. `simpleIf` has one branch. New editor branches use `sys:if`.
@@ -250,8 +275,8 @@ plain text or HTML. Some X11 applications emit no event for a repeated copy.
 For plain text, the fallback reads PRIMARY only if its owner belongs to the
 focused window. It then copies that text to CLIPBOARD. Selection reads support retry,
 trimming, and URL encoding. They do not return a source URL.
-UI Automation, action-parameter text, wait-window monitoring, and native Wayland
-clipboard events remain unsupported and are reported by the checker.
+UI Automation, action-parameter text, and native Wayland clipboard events remain
+unsupported and are reported by the checker.
 
 `sys:getSelectedFiles` supports `getSelection` on X11. It sends Ctrl+C and requires
 a new clipboard event. It reads local file URIs, preserves Unicode paths, and

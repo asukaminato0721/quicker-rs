@@ -260,6 +260,10 @@ impl QuickerRuntime {
         child.subprogram_scopes = self.subprogram_scopes.clone();
         child.subprogram_scopes.push(data.sub_programs.clone());
         child.call_depth = self.call_depth + 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            child.wait_window = self.wait_window.clone();
+        }
         child.dependency_dir = self.dependency_dir.clone();
         child.action_state = self.action_state.clone();
         child.clipboard_before_copy = self.clipboard_before_copy;

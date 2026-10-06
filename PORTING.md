@@ -465,6 +465,40 @@ establish completion of the port.
   preview dead-code warnings. One earlier single-instance restart test failed
   transiently. Its isolated rerun and two subsequent full runs passed.
 
+## Step 22: Waiting windows and monitored waits (2026-10-07)
+
+- Deferred selection-window implementation at the user's request. Saved its
+  unfinished files and tracked patch outside the worktree. It remains recoverable
+  at `/tmp/quicker-deferred-selection-step22`. Complex C# execution stays deferred.
+- Inspected the MSI showWaitWin dispatcher, creation/update closures, root context,
+  progress parser, closed handler, automatic timer, delay, and clipboard waits.
+  Added all six waiting-window modes. Root actions and subprograms share one window.
+  Show updates an existing window. Update on a missing window does nothing.
+- Added closure and button outputs, progress/countdown values, automatic closure,
+  font size, and three activation modes. Set X11 input hints before mapping a
+  mouse-only window. Buttons stay accessible with long scrolling prompts.
+- Added programmatic closure, action cancellation, and root-action cleanup.
+  Retained the MSI behavior where automatic timeout can stop the action through
+  stopActionIfClose. Button returns bypass that stop flag. Added bounded resources
+  and explicit errors for unsupported help and rich buttons.
+- Delay and clipboard waits can monitor window closure. Delay exits successfully.
+  Clipboard closure returns failure outputs and obeys stopIfFail. Delay monitoring
+  also applies below one second, as the inspected MSI implements it. Invalid delay
+  integers produce errors. Missing delayMs uses the MSI default of 100 ms.
+- The isolated X11/KWin test passed all activation modes, outputs, long prompts,
+  shared subprogram state, close/cancel/timeout behavior, and action-end cleanup.
+  Monitored 30-second waits returned within three seconds after a button click.
+  A position test exposed ignored initial placement and stale cached coordinates.
+  Fixed both. The test now passes position restoration after a manual move.
+- Executed the unchanged, hash-verified OpenCC update step with and without an open
+  window. Controlled variables produced the expected 2/4 display. All seven corpus
+  tests passed. The full OpenCC workflow remains blocked by other modules and paths.
+- Validation: 180 native tests passed, 14 opt-in tests ignored. All 17 Python tests
+  passed. Clippy passed with warnings denied. Wasm compiled with preview dead-code
+  warnings. Added the wait-window smoke test and KWin package to CI. Remote CI
+  remains unverified. Native Wayland, per-monitor placement, rich button syntax,
+  Markdown help, and Windows taskbar progress remain gaps for this module.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

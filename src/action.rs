@@ -18,6 +18,7 @@ mod show_text;
 mod string_process;
 mod subprogram;
 mod text_steps;
+mod wait_window;
 mod window_steps;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2049,6 +2050,8 @@ struct QuickerRuntime {
     subprogram_scopes: Vec<Vec<Value>>,
     call_depth: usize,
     dependency_dir: Option<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
+    wait_window: Arc<crate::wait_windows::Session>,
     #[cfg(target_os = "linux")]
     keyboard: Arc<std::sync::Mutex<Option<crate::x11::Keyboard>>>,
 }
@@ -2095,11 +2098,13 @@ impl QuickerRuntime {
             action_title: "Quicker".into(),
             state_scope,
             action_state,
-            control,
+            control: Some(control.unwrap_or_default()),
             clipboard_before_copy: None,
             subprogram_scopes: vec![data.sub_programs.clone()],
             call_depth: 0,
             dependency_dir: subprogram::dependency_dir(),
+            #[cfg(not(target_arch = "wasm32"))]
+            wait_window: Default::default(),
             #[cfg(target_os = "linux")]
             keyboard: Default::default(),
         })
@@ -2172,15 +2177,9 @@ impl QuickerRuntime {
             Some(runner::StepRunner::MsgBox) => self.run_message_box(step),
             Some(runner::StepRunner::SelectFolder) => self.run_folder_dialog(step),
             Some(runner::StepRunner::ShowText) => self.run_show_text(step),
+            Some(runner::StepRunner::ShowWaitWin) => self.run_wait_window(step),
             Some(runner::StepRunner::UserInput) => self.run_input_dialog(step),
-            Some(runner::StepRunner::Delay) => {
-                let delay_ms = self
-                    .input_string_opt(&step.input_params, "delayMs")?
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                sleep_millis(delay_ms, self.control.as_ref())?;
-                Ok(StepFlow::Continue)
-            }
+            Some(runner::StepRunner::Delay) => self.run_delay(step),
             Some(runner::StepRunner::KeyInput) => {
                 let keys = self.input_string(&step.input_params, "keys")?;
                 let payload: QuickerKeyInput = serde_json::from_str(&keys)

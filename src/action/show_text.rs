@@ -84,7 +84,7 @@ pub(super) fn has_return_buttons(text: &str) -> bool {
     operations(text).is_ok_and(|buttons| !buttons.is_empty())
 }
 
-fn operations(text: &str) -> Result<Vec<(String, String)>, String> {
+pub(super) fn operations(text: &str) -> Result<Vec<(String, String)>, String> {
     let mut result = Vec::new();
     for line in text
         .lines()

@@ -543,3 +543,52 @@ query, wait-close, programmatic close, failure continuation, and cancellation.
 It verifies the pinned OpenCC hash and executes three unchanged showText steps.
 Both NO_WAIT windows remain open when the action terminates. Other OpenCC modules
 are not executed by this test. The full action remains blocked.
+
+## Waiting window evidence
+
+The MSI ShowWaitWinStep Execute method is at RVA `0x2b59b4`. The creation,
+existing-window update, and explicit-update closures are `0x3edd2c`, `0x3edfd4`,
+and `0x3ee088`. They use the root action context, including subprogram calls.
+Missing-window checks return closed. The MSI also writes `isClosed` after
+`waitClose` and `showAndWaitClose`, although the catalog only lists `check`.
+
+WaitUserWindow.Update is at `0x1c812c`. Progress parsing uses `0x1c845c`.
+A negative numerator adds the total before progress calculation. The native
+implementation rejects nonfinite values and nonpositive totals. It caps text,
+button count, window count, font size, and automatic timeout.
+
+The closed handler at `0x1c7d08` stops the action unless a button or programmatic
+close sets its bypass flag. The automatic timer at `0x1c8930` calls Close without
+that flag. The Linux implementation retains this MSI behavior. The current
+[official documentation](https://docs.getquicker.net/v2/xaction/modules/showwaitwin/)
+describes stopping for the title-bar close button but does not explain this timer
+case. Delay execution (`0x402468`) checks closure for all positive delays.
+Clipboard waits (`0x402098`) enable monitoring only when a window exists at entry.
+
+```sh
+cargo build --locked
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  dbus-run-session -- python3 scripts/smoke-wait-windows-x11.py
+QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  cargo test --locked downloaded_opencc_wait_window -- --ignored
+```
+
+The GUI test needs KWin, Xvfb, xdotool, xprop, D-Bus, and ImageMagick. It uses
+isolated settings and an isolated desktop session. It checks all three activation
+modes, position restoration after a manual move, closure outputs, return buttons,
+long prompts, shared subprogram state,
+programmatic closure, timeout behavior, cancellation, and action-end cleanup.
+It also checks that monitored 30-second delay and clipboard waits finish within
+three seconds of a button click. Clipboard closure returns failure outputs.
+
+The GUI test verifies the pinned OpenCC hash. It executes the original update
+step with and without an existing window. The original expression displays
+`2/4` with controlled count/list variables. A screenshot confirms that progress.
+This does not execute the complete OpenCC action. Its script, form, selection,
+list-management, text-tool, Windows-path, and complex-expression gaps remain.
+
+The compatibility report now recognizes `sys:showWaitWin`. It reports active
+unsupported options and defers dynamic option values to runtime validation.
+X11 placement uses the desktop workarea. Per-monitor placement, native Wayland,
+Markdown help, rich button syntax, and taskbar progress still need implementation.

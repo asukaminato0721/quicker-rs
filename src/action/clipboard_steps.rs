@@ -45,10 +45,18 @@ fn read_copied_text(format: &str) -> Result<String, String> {
 }
 
 impl QuickerRuntime {
-    fn wait_for_clipboard(&self, baseline: u64, timeout: Duration) -> Result<(), String> {
+    fn wait_for_clipboard(
+        &self,
+        baseline: u64,
+        timeout: Duration,
+        monitor_window: bool,
+    ) -> Result<(), String> {
         let start = Instant::now();
         loop {
             ensure_not_cancelled(self.control.as_ref())?;
+            if monitor_window && self.wait_window_closed() {
+                return Err("Wait window closed before the clipboard changed".into());
+            }
             if clipboard_snapshot()?.0 != baseline {
                 return Ok(());
             }
@@ -89,9 +97,9 @@ impl QuickerRuntime {
         step: &QuickerPluginStepDocument,
     ) -> Result<StepFlow, String> {
         let result = (|| {
-            if self.input_bool(&step.input_params, "monitorWaitWin")? {
-                return Err("Wait-window monitoring is not supported".into());
-            }
+            // The MSI enables monitoring only when a window is open at entry.
+            let monitor_window = self.input_bool(&step.input_params, "monitorWaitWin")?
+                && !self.wait_window_closed();
             let seconds = self
                 .input_string_opt(&step.input_params, "maxWaitSeconds")?
                 .unwrap_or_else(|| "10".into())
@@ -109,7 +117,7 @@ impl QuickerRuntime {
             if current.0 != baseline || current.1.is_some_and(|age| recent > 0 && age <= recent) {
                 return Ok(());
             }
-            self.wait_for_clipboard(baseline, timeout)
+            self.wait_for_clipboard(baseline, timeout, monitor_window)
         })();
         self.clipboard_result(step, result)
     }
@@ -147,7 +155,7 @@ impl QuickerRuntime {
                 let before = clipboard_snapshot()?.0;
                 send_key_combo(&["ctrl".into()], "c")?;
                 let mut result = self
-                    .wait_for_clipboard(before, Duration::from_millis(wait))
+                    .wait_for_clipboard(before, Duration::from_millis(wait), false)
                     .and_then(|()| read_copied_text(&format));
                 ensure_not_cancelled(self.control.as_ref())?;
                 // Some X11 clients do not announce a second copy of the same selection.

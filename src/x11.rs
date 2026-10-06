@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use xcb::{x, Xid, XidNew};
 mod keyboard;
 mod selection;
+pub(crate) mod wait_window;
 mod windows;
 pub(crate) use keyboard::Keyboard;
 pub(crate) use selection::read_file_selection;
