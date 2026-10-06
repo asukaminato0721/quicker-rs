@@ -9,6 +9,7 @@ mod runner;
 #[cfg(test)]
 mod runtime_tests;
 mod subprogram;
+mod text_steps;
 mod window_steps;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2593,36 +2594,7 @@ impl QuickerRuntime {
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::ReportProgress) => Ok(StepFlow::Continue),
-            Some(runner::StepRunner::OutputText) => {
-                let content = self.input_string(&step.input_params, "content")?;
-                let method = self
-                    .input_string_opt(&step.input_params, "method")?
-                    .unwrap_or_else(|| "paste".into());
-                let before = self
-                    .input_string_opt(&step.input_params, "delayBeforePaste")?
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let after = self
-                    .input_string_opt(&step.input_params, "delayAfterPaste")?
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let append_return = self.input_bool(&step.input_params, "appendReturn")?;
-
-                match method.as_str() {
-                    "paste" => {
-                        write_clipboard_text(&content)?;
-                        sleep_millis(before, self.control.as_ref())?;
-                        send_key_combo(&["ctrl".into()], "v")?;
-                        if append_return {
-                            send_key_combo(&[], "Return")?;
-                        }
-                        sleep_millis(after, self.control.as_ref())?;
-                    }
-                    other => return Err(format!("Unsupported outputText method: {other}")),
-                }
-
-                Ok(StepFlow::Continue)
-            }
+            Some(runner::StepRunner::OutputText) => self.run_output_text(step),
             None => Err(format!(
                 "Unsupported Quicker step: {}",
                 step.step_runner_key
@@ -4212,6 +4184,10 @@ fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
         return result;
     }
 
+    if crate::x11::is_wayland() {
+        return Err("Key automation requires an X11 session".into());
+    }
+
     let xdotool = which::which("xdotool")
         .map_err(|_| "Quicker key automation requires xdotool on this system".to_string())?;
     let chord = if modifiers.is_empty() {
@@ -4273,13 +4249,19 @@ fn type_input_text(text: &str) -> Result<(), String> {
         return result;
     }
 
+    if crate::x11::is_wayland() {
+        return Err("Text automation requires an X11 session".into());
+    }
+
     let xdotool = which::which("xdotool")
         .map_err(|_| "Quicker text automation requires xdotool on this system".to_string())?;
 
     Command::new(xdotool)
         .arg("type")
         .arg("--delay")
-        .arg("0")
+        // xdotool temporarily maps Unicode keysyms. A zero delay can remove
+        // that mapping before the target processes the key event.
+        .arg("12")
         .arg("--clearmodifiers")
         .arg("--")
         .arg(text)

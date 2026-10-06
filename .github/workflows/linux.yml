@@ -23,6 +23,8 @@ jobs:
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --key-operation
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --output-text
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py --text-cancel
       - run: xvfb-run -a env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 cargo test key_operations_query_state -- --ignored
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-plugin-editor-x11.py tests/fixtures/formula-image.json
       - run: xvfb-run -a cargo test clipboard_persists_after_action_worker_exits -- --ignored

@@ -63,9 +63,9 @@ Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
 [用QuickLook预览文件](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
 The other Citavi exports also have unresolved subprogram dependencies. QuickLook
-still needs `sys:getSelectedFiles`, the `outputText` input
-mode, and a Linux replacement for `QuickLook.exe`. Its `sys:run` step is now
-recognized. Passing preservation checks does not
+still needs `sys:getSelectedFiles` and a Linux replacement for `QuickLook.exe`.
+Its run, key-operation, and text-input steps are now recognized.
+Passing preservation checks does not
 establish execution compatibility with Citavi, QuickLook, or Windows APIs.
 
 ## Automated checks
@@ -217,3 +217,28 @@ xvfb-run -a python3 scripts/smoke-input-x11.py --key-operation
 Both checks passed on 2026-10-07. The first verifies live state, toggling,
 subprogram ownership, cancellation cleanup, and preservation of externally held
 keys. The second verifies actual Shift+A and Space input and closed-target errors.
+
+## Text output evidence
+
+The MSI `OutputTextStep.Execute` at RVA `0x2cf138` delegates to `0x4006e8`.
+It uses the common success/failure wrapper and skips empty text.
+`ActionHelper.SendTextToWindow` at `0x259368` selects paste or keyboard text,
+normalizes CRLF for keyboard input, uses delays, and optionally presses Return.
+The [official reference](https://docs.getquicker.net/v2/xaction/modules/outputtext/)
+describes these fields.
+
+The Linux implementation sends short complete xdotool batches and checks
+cancellation between them. Character delays are cancellable. The initial X11
+test lost Chinese and emoji with the old zero-delay backend. With xdotool's
+12 ms key timing, the test received the exact UTF-8 bytes. The test also covers
+literal leading dashes, CRLF conversion, appended Return, and restoration of an
+action-held Shift key. A separate test cancels during a character delay and
+verifies that no second character or later state write occurs with `stopIfFail=0`.
+
+```sh
+xvfb-run -a python3 scripts/smoke-input-x11.py --output-text
+xvfb-run -a python3 scripts/smoke-input-x11.py --text-cancel
+```
+
+These checks passed on 2026-10-07. Simulated typing still depends on the target's
+input method and its handling of X11 keyboard events.

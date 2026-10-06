@@ -171,6 +171,18 @@ The installed keyboard layout must contain the requested key. Keys pressed by
 an action are shared with its subprograms and released when the action ends,
 fails, or is cancelled. Keys held before the action are not owned by this cleanup.
 
+`sys:outputText` supports clipboard paste and simulated text input. Input accepts
+Unicode, converts CRLF to LF, and supports a per-character delay and an optional
+final Return. It does not change the clipboard. The X11 text backend uses
+xdotool's 12 ms key timing so temporary Unicode mappings remain available to
+the target. A zero character delay adds no further wait. Cancellation is checked
+between batches of at most 32 characters and during requested delays. Each batch
+finishes its key releases and modifier restoration before cancellation.
+Paste defaults to 50 ms before Ctrl+V and 10 ms after it. Both modes report
+`isSuccess` and honor `stopIfFail`; cancellation always stops the action. Empty
+content is skipped. Clipboard history exclusion remains unsupported. Input
+methods and target applications can affect simulated typing.
+
 `sys:subprogram` runs action-local subprograms by name. Each call has fresh typed
 variables. Inputs and outputs use `var:KEY` bindings and the variable's `IsInput`
 and `IsOutput` flags. Calls can use definitions in the current or parent scope.

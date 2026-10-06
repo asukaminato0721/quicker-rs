@@ -311,6 +311,45 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:outputText" {
+        let method = step["InputParams"]["method"]["Value"]
+            .as_str()
+            .unwrap_or("paste");
+        let keys: &[&str] = if method.eq_ignore_ascii_case("input") {
+            &["delayBetweenChar"]
+        } else {
+            &["delayBeforePaste", "delayAfterPaste", "hideInHistory"]
+        };
+        for key in keys {
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if *key == "hideInHistory" {
+                if truthy(Some(&binding["Value"])) {
+                    issue(
+                        issues,
+                        &option_path,
+                        "clipboard_history_exclusion_not_supported",
+                        "blocker",
+                    );
+                }
+            } else if !binding["Value"].is_null()
+                && text_steps::delay(&value_to_string(&binding["Value"])).is_err()
+            {
+                issue(issues, &option_path, "invalid_text_delay", "blocker");
+            }
+        }
+    }
     if runner == "sys:keyoperation" {
         issue(issues, path, "requires_x11_keyboard_layout", "warning");
         for key in ["key", "getRealMouseState"] {
@@ -468,7 +507,7 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
         "sys:stateStorage" => Some(("type", &["readActionState", "saveActionState"], "")),
         "sys:readFile" => Some(("type", &["image"], "")),
         "sys:fileOperation" => Some(("type", &["deleteFile"], "")),
-        "sys:outputText" => Some(("method", &["paste"], "paste")),
+        "sys:outputText" => Some(("method", &["paste", "input"], "paste")),
         "sys:getSelectedText" => Some(("format", &["UnicodeText", "Html"], "UnicodeText")),
         _ => None,
     };
@@ -488,7 +527,12 @@ fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>
             );
         } else {
             let literal = binding["Value"].as_str().unwrap_or(default);
-            if !allowed.contains(&literal) {
+            let supported = if runner == "sys:outputText" {
+                allowed.iter().any(|v| v.eq_ignore_ascii_case(literal))
+            } else {
+                allowed.contains(&literal)
+            };
+            if !supported {
                 issues.push(json!({"path": option_path, "code": "unsupported_option", "value": literal, "severity": "blocker"}));
             }
         }
@@ -719,6 +763,32 @@ mod tests {
             assert_eq!(exit_code(&report(operation, key)), 1);
         }
         assert_eq!(report("key_up", "Space")["runtime"]["executed"], false);
+    }
+
+    #[test]
+    fn text_output_report_accepts_input_and_rejects_ignored_options() {
+        let report = |params: Value| {
+            inspect(&workflow(
+                json!([{"StepRunnerKey":"sys:outputText", "InputParams":params}]),
+            ))
+        };
+        assert_eq!(
+            exit_code(&report(
+                json!({"method":{"Value":"input"}, "delayBetweenChar":{"Value":"3"}})
+            )),
+            0
+        );
+        assert_eq!(
+            exit_code(&report(
+                json!({"method":{"Value":"input"}, "delayBetweenChar":{"Value":"-1"}})
+            )),
+            1
+        );
+        assert_eq!(
+            exit_code(&report(json!({"hideInHistory":{"Value":"1"}}))),
+            1
+        );
+        assert_eq!(report(json!({}))["runtime"]["executed"], false);
     }
 
     #[test]

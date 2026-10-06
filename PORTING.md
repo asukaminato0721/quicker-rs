@@ -254,13 +254,31 @@ establish completion of the port.
   with preview dead-code warnings. All six real exports passed preservation.
   The QuickLook report now has one missing runner: selected files.
 
+## Step 13: Send text through imported workflows (2026-10-07)
+
+- Added `sys:outputText` input mode with Unicode, CRLF normalization, character
+  delays, appended Return, success output, and failure control. Empty content
+  leaves input and clipboard unchanged. Paste now uses documented delay defaults
+  and rejects unsupported clipboard-history exclusion before writing.
+- Bounded typing batches let complete key releases and modifier restoration
+  finish before cancellation. Requested delays remain cancellable. Set xdotool
+  key timing to 12 ms after the real test showed Unicode loss at zero delay.
+- Native tests: 121 passed, seven opt-in tests ignored. Python tests: 17 passed.
+  Clippy and Wasm checks passed, with preview dead-code warnings. Full native
+  tests passed outside the sandbox after socket tests hit sandbox restrictions.
+- X11 tests received exact Chinese, emoji, literal dashes, and newline bytes,
+  preserved a held Shift key, and verified cancellation before the next character
+  and state write. Both new workflows are included in CI.
+- The real QuickLook report now has two blockers: the selected-files runner and
+  the Windows QuickLook executable. A complete Linux workflow still needs both.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Implement missing modules found in real downloads, including selected files
-   and text input. Validate shared subprogram execution when an export or
+1. Implement missing modules found in real downloads, including selected files.
+   Validate shared subprogram execution when an export or
    authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
