@@ -73,7 +73,7 @@ fn name(path: &str) -> &str {
 
 // Compare digit runs without parsing fixed-width numbers. Case folding and
 // ordinal Unicode ordering are deterministic; Windows locale rules can differ.
-fn natural(a: &str, b: &str) -> SortOrder {
+pub(super) fn natural(a: &str, b: &str) -> SortOrder {
     let (a, b) = (a.to_lowercase(), b.to_lowercase());
     let (mut a, mut b) = (a.as_str(), b.as_str());
     while !a.is_empty() && !b.is_empty() {
@@ -106,7 +106,7 @@ fn natural(a: &str, b: &str) -> SortOrder {
     a.len().cmp(&b.len())
 }
 
-fn sort_files(
+pub(super) fn sort_files(
     files: &mut [String],
     sort: &str,
     control: Option<&ActionExecutionControl>,

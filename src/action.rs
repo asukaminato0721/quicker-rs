@@ -7,6 +7,7 @@ mod file_dialogs;
 mod file_selection;
 mod file_steps;
 mod key_steps;
+mod list_steps;
 mod preservation;
 mod regex_steps;
 mod run_steps;
@@ -2308,6 +2309,8 @@ impl QuickerRuntime {
                 }
             }
             Some(runner::StepRunner::ReadFile) => self.run_read_file(step),
+            Some(runner::StepRunner::ListOperations) => self.run_list_operation(step),
+            Some(runner::StepRunner::Comment) => Ok(StepFlow::Continue),
             Some(runner::StepRunner::WriteTextFile) => self.run_write_text_file(step),
             Some(runner::StepRunner::SelectFile) => self.run_file_dialog(step),
             Some(runner::StepRunner::Imageinfo) => {

@@ -443,3 +443,39 @@ for each dialog. Native filters and automatic extensions can differ from Windows
 Simple wildcard filters are supported. Exact-name and bracket-pattern filters
 are rejected. Local Qt/GTK dialogs keep cancellation within the managed process.
 Portal selection and native Wayland remain outside this verification.
+
+### List operations and original OpenCC steps
+
+`ListOperationRunner.Execute` at `0x2f2ba0` invokes the closure at `0x410bf0`.
+The closure uses string lists. It changes the input for updates and returns a
+new list for sorting, slicing, concatenation, distinct values, and filtering.
+The text predicates at `0x412340`, `0x41235c`, and `0x412374` use
+`OrdinalIgnoreCase`. Filter exclusions use LINQ `Except`, which removes duplicates.
+Slices use `Skip` and `Take`. Equality and index lookup remain case-sensitive.
+The closure normalizes negative positions before dispatch. `removeAt` adds
+Count again if the normalized position remains negative. Tests retain that behavior.
+
+The MSI passes no stop parameter to `ExecuteCommonAction` at `0x2a7d1c`.
+List failures therefore stop the action. The newer
+[official list catalog](https://docs.getquicker.net/v2/xaction/modules/listoperations/)
+includes `stopIfFail`. The compatibility runner rejects its false setting.
+The runtime implements 31 operations. Fuzzy/pinyin filtering remains blocked.
+Ordinal sorting replaces Windows culture sorting. Natural sorting, Unicode
+case tables, native timestamps, and collection reference identity can differ.
+The checker reports these limitations. Lists accept text items only, with limits
+of 100,000 items and 16 MiB. Regex syntax and backtracking retain the limits of
+the existing regex runner. No arbitrary C# or .NET objects are introduced.
+
+`CommentStep.Execute` at `0x2ee2a0` returns without reading its inputs.
+The runtime and checker ignore comment inputs and child steps.
+The opt-in `downloaded_opencc_list_and_comment_steps_execute_unchanged` test
+executes both original append steps and both original comment steps. It loads
+original variable declarations and supplies a native path through the existing
+`path` variable. It checks the two resulting list entries. The source JSON
+remains unchanged. Run this test with the existing `downloaded_` corpus command.
+
+On 2026-10-07, another download of the pinned author export matched SHA-256
+`e511eca189b4db9fa323697c263e4686cabd590b918431caab15e6d4e1bcea5e`.
+All four corpus tests passed. The report no longer lists list operations or
+comments as blockers. Other OpenCC modules, expressions, and Windows paths
+remain blocked. The complete OpenCC workflow was not executed.

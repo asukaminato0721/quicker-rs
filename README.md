@@ -139,6 +139,22 @@ and UTF-8 `urlEncode`. These methods are available in the action editor.
 Unsupported methods retain their JSON instead of becoming lowercase operations.
 Both text modules report success and errors and honor `stopIfFail`.
 
+`sys:listOperations` supports 31 operations on text lists. These include updates,
+negative indexes, slices, concatenation, distinct values, regex filters, text
+filters, and sorting. Updates change the bound list variable. Queries and sorting
+return separate values. Filter exclusions use distinct values, as in the MSI.
+`sys:comment` does not evaluate inputs or execute child steps.
+
+List limits are 100,000 items and 16 MiB of text. Cancellation is checked between
+regex searches. Fuzzy/pinyin filtering and `stopIfFail=false` remain unsupported.
+The supplied MSI stops on list errors. Its `removeAt` applies the list length
+twice to negative indexes that remain negative after the first adjustment.
+Other indexed updates reject positions outside the list. Slices use Skip/Take
+behavior and can return an empty list. Sort order and Unicode case rules can
+differ from Windows. File metadata sorting requires native regular files and
+available timestamps. Lists do not share .NET reference identity. These modules
+retain JSON editor cards to preserve all bindings.
+
 `sys:readFile` reads text as UTF-8 by default. `sys:WriteTextFile` creates parent
 directories and supports overwrite, append, BOMs, and newline conversion.
 Both modules support UTF-8, UTF-16, UTF-32, and ASCII. Unicode BOMs override the

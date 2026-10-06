@@ -393,6 +393,30 @@ establish completion of the port.
   passed with warnings denied. Wasm compiled with preview dead-code warnings.
   Added both file-dialog smoke commands to CI. Remote CI remains unverified.
 
+## Step 19: List operations and original OpenCC list steps (2026-10-07)
+
+- Inspected the MSI list runner, execution closure, text predicates, and common
+  error helper. Added 31 operations on text lists and the comment no-op runner.
+  Mutations update their input variable. Queries and sorting return new values.
+  Preserved negative indexes, Skip/Take slices, case-sensitive equality,
+  case-insensitive filters, and distinct filter exclusions.
+- Added limits of 100,000 items and 16 MiB, regex cancellation checks, and errors
+  for unsupported inputs. Preserved the MSI's second negative-index adjustment
+  for `removeAt`. List failures stop execution. Fuzzy/pinyin filtering and the
+  newer `stopIfFail=false` option remain blocked. Reports identify differences
+  in culture sorting, Unicode rules, native metadata, and reference identity.
+- Executed both unchanged OpenCC append steps and both unchanged comment steps
+  with original variable declarations and a native path variable. Another
+  author-source download matched the pinned hash. All four corpus tests passed,
+  including preservation of seven real actions. The full OpenCC action remains
+  blocked by other modules, expressions, and Windows paths.
+- Repeated the ID download interface with dependency checks. The public Ref->Ob
+  export downloaded and passed preservation. Its official dependency returned
+  HTTP 401. The report retained that failure and returned a blocked result.
+- Validation: 158 native tests passed, 11 opt-in tests ignored. All 17 Python
+  tests passed. Clippy passed with warnings denied. Wasm compiled with 115
+  preview dead-code warnings. No desktop code changed in this step.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

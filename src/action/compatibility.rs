@@ -176,7 +176,7 @@ fn inspect_subprogram_calls(
             );
             continue;
         }
-        if value["Disabled"] == true {
+        if value["Disabled"] == true || value["StepRunnerKey"] == "sys:comment" {
             continue;
         }
         for key in ["IfSteps", "ElseSteps"] {
@@ -259,6 +259,10 @@ fn visit(
             if let Some(key) = object.get("StepRunnerKey").and_then(Value::as_str) {
                 let implemented = runner::StepRunner::from_key(key).is_some();
                 steps.push(json!({"path": path, "runner": key, "disabled": disabled, "runner_implemented": implemented}));
+                // CommentStep.Execute returns without reading inputs or children.
+                if key == "sys:comment" {
+                    return;
+                }
                 if !disabled {
                     if !implemented {
                         issues.push(json!({"path": path, "code": "unsupported_runner", "runner": key, "severity": "blocker"}));
@@ -311,6 +315,92 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:listOperations" {
+        issue(
+            issues,
+            path,
+            "list_values_do_not_share_dotnet_reference_identity",
+            "warning",
+        );
+        let binding = &step["InputParams"]["type"];
+        let operation = binding["Value"].as_str().unwrap_or("none");
+        let dynamic =
+            binding["VarKey"].is_string() || operation.starts_with("$=") || operation.contains('{');
+        if dynamic {
+            issue(
+                issues,
+                path,
+                "dynamic_option_requires_validation",
+                "warning",
+            );
+        } else if !super::list_steps::OPERATIONS.contains(&operation) {
+            issue(issues, path, "unsupported_list_operation", "blocker");
+        }
+        let stop = &step["InputParams"]["stopIfFail"];
+        if !stop["VarKey"].is_string() && !stop["Value"].is_null() && !truthy(Some(&stop["Value"]))
+        {
+            issue(
+                issues,
+                path,
+                "unsupported_list_continue_on_failure",
+                "blocker",
+            );
+        }
+        if dynamic
+            || matches!(
+                operation,
+                "sortAsc"
+                    | "sortDesc"
+                    | "sortAscNature"
+                    | "filterByContains"
+                    | "filterByStarts"
+                    | "filterByEnds"
+            )
+        {
+            issue(
+                issues,
+                path,
+                "list_sort_and_unicode_rules_can_differ_from_dotnet",
+                "warning",
+            );
+        }
+        if dynamic || operation.starts_with("FileSize") || operation.contains("Time") {
+            issue(
+                issues,
+                path,
+                "list_metadata_sort_requires_native_regular_files_and_timestamps",
+                "warning",
+            );
+        }
+        if matches!(
+            operation,
+            "removeByMatch" | "removeByNotMatch" | "filterByRegex"
+        ) {
+            issue(
+                issues,
+                path,
+                "regex_engine_semantics_require_validation",
+                "warning",
+            );
+            let pattern = &step["InputParams"]["pattern"];
+            if pattern["VarKey"].is_string()
+                || pattern["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if pattern["Value"].as_str().is_none_or(|s| {
+                s.is_empty() || regex_steps::compile(s, false, false, false).is_err()
+            }) {
+                issue(issues, path, "unsupported_list_pattern", "blocker");
+            }
+        }
+    }
     if runner == "sys:selectFile" {
         issue(
             issues,
