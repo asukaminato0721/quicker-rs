@@ -36,6 +36,117 @@ class Opener:
 
 
 class DownloadTests(unittest.TestCase):
+    def test_dependencies_download_once_and_checker_inspects_child_steps(self):
+        child_id = '3748cecd-84b6-47f7-191e-08ddfab0d924'
+        call = {'StepRunnerKey': 'sys:subprogram', 'InputParams': {
+            'subProgram': {'Value': f'@@{child_id}@4@child'}}}
+        root = {**ACTION, 'Data': json.dumps({'Steps': [call, call]})}
+        child = {**ACTION, 'Id': child_id, 'Revision': 4, 'ActionType': 25,
+                 'Data': json.dumps({'Steps': [{'StepRunnerKey': 'sys:future'}]})}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'root.json'
+            path.write_text(json.dumps(root))
+            with patch.object(checker, 'download', return_value=json.dumps({'IsSuccess': True, 'Data': child}).encode()) as download:
+                with contextlib.redirect_stdout(io.StringIO()) as stream:
+                    code = checker.main(['--file', str(path), '--with-dependencies', '--output-dir', str(Path(tmp) / 'out')])
+            report = json.loads(stream.getvalue())
+            self.assertEqual(code, 1)
+            self.assertEqual(download.call_count, 1)
+            self.assertIn('revision=4', download.call_args.args[0])
+            self.assertEqual(report['dependencies']['items'][0]['status'], 'downloaded')
+            self.assertEqual(len(report['dependencies']['items'][0]['uses']), 2)
+            self.assertTrue(any(i['code'] == 'unsupported_runner' and 'ResolvedSubprogram' in i['path']
+                                for i in report['runtime']['issues']))
+            self.assertFalse(report['runtime']['executed'])
+            dep_dir = Path(report['dependencies']['directory'])
+            with patch.object(checker, 'download', side_effect=AssertionError('unexpected download')):
+                result = checker.fetch_dependencies(root, dep_dir, '1.45.5.0')
+            self.assertEqual(result[0]['status'], 'cached')
+            cached = Path(result[0]['file'])
+            cached.write_text(cached.read_text() + ' ')
+            result = checker.fetch_dependencies(root, dep_dir, '1.45.5.0')
+            self.assertEqual(result[0]['code'], 'hash_mismatch')
+
+    def test_dependency_auth_failure_keeps_root_report_and_no_fake_cache(self):
+        root = {**ACTION, 'Data': json.dumps({'Steps': [{'StepRunnerKey': 'sys:subprogram',
+                'InputParams': {'subProgram': {'Value': f'@@{ID}@3@test'}}}]})}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'root.json'
+            path.write_text(json.dumps(root))
+            with patch.object(checker, 'download', side_effect=checker.CheckError('authentication_required', 'HTTP 401')):
+                with contextlib.redirect_stdout(io.StringIO()) as stream:
+                    code = checker.main(['--file', str(path), '--with-dependencies', '--output-dir', str(Path(tmp) / 'out')])
+            report = json.loads(stream.getvalue())
+            self.assertEqual(code, 1)
+            self.assertEqual(report['import']['status'], 'pass')
+            self.assertEqual(report['dependencies']['items'][0]['code'], 'authentication_required')
+            self.assertEqual(report['runtime']['status'], 'blocked')
+            self.assertFalse((Path(tmp) / 'out/subprograms/shared').exists())
+
+    def test_dependency_cycles_and_disabled_dynamic_calls(self):
+        call = {'StepRunnerKey': 'sys:subprogram', 'InputParams': {'subProgram': {'Value': f'@@{ID}@3@test'}}}
+        child = {**ACTION, 'ActionType': 25, 'Data': json.dumps({'Steps': [call]})}
+        root = {**ACTION, 'Data': json.dumps({'Steps': [call, {**call, 'Disabled': True},
+                {**call, 'InputParams': {'subProgram': {'VarKey': 'name'}}}]})}
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(checker, 'download', return_value=json.dumps({'IsSuccess': True, 'Data': child}).encode()) as download:
+                result = checker.fetch_dependencies(root, Path(tmp), '1.45.5.0')
+            self.assertEqual(download.call_count, 1)
+            resolved = next(i for i in result if i.get('status') == 'downloaded')
+            self.assertEqual(len(resolved['uses']), 2)
+            self.assertTrue(any(i.get('status') == 'dynamic' for i in result))
+        for value in ['@@../file@1@bad', f'@@{ID}@0@bad', f'@@{ID}@4294967296@bad']:
+            bad = {**ACTION, 'Data': json.dumps({'Steps': [{**call, 'InputParams': {'subProgram': {'Value': value}}}]})}
+            self.assertEqual(list(checker.shared_references(bad))[0]['status'], 'error')
+
+    def test_dependency_identity_type_and_revision_are_validated(self):
+        root = {**ACTION, 'Data': json.dumps({'Steps': [{'StepRunnerKey': 'sys:subprogram',
+                'InputParams': {'subProgram': {'Value': f'@@{ID}@3@test'}}}]})}
+        for patch_fields, error in [({'Id': '00000000-0000-0000-0000-000000000000'}, 'id_mismatch'),
+                                    ({'Revision': 4}, 'revision_mismatch'), ({'ActionType': 24}, 'wrong_dependency_type')]:
+            child = {**ACTION, 'ActionType': 25, **patch_fields}
+            with tempfile.TemporaryDirectory() as tmp:
+                with patch.object(checker, 'download', return_value=json.dumps({'IsSuccess': True, 'Data': child}).encode()):
+                    result = checker.fetch_dependencies(root, Path(tmp), '1.45.5.0')
+                self.assertEqual(result[0]['code'], error)
+                self.assertFalse(list(Path(tmp).rglob('*.json')))
+
+    def test_dependencies_follow_global_exports_and_nested_shared_calls(self):
+        child_id = '3748cecd-84b6-47f7-191e-08ddfab0d924'
+        def call(name):
+            return {'StepRunnerKey': 'sys:subprogram', 'InputParams': {'subProgram': {'Value': name}}}
+        root = {**ACTION, 'Data': json.dumps({'Steps': [call('%%' + ID)]})}
+        global_program = {'Id': ID, 'Name': 'global', 'Steps': [call(f'@@{child_id}@4@child')]}
+        child = {**ACTION, 'Id': child_id, 'Revision': 4, 'ActionType': 25,
+                 'Data': json.dumps({'Steps': [call(f'@@{ID}@3@nested')]})}
+        nested = {**ACTION, 'ActionType': 25, 'Data': '{"Steps":[]}'}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'global' / f'{ID}.json'
+            path.parent.mkdir()
+            path.write_text(json.dumps(global_program))
+            responses = [json.dumps({'IsSuccess': True, 'Data': v}).encode() for v in [child, nested]]
+            with patch.object(checker, 'download', side_effect=responses) as download:
+                result = checker.fetch_dependencies(root, Path(tmp), '1.45.5.0')
+            self.assertEqual(download.call_count, 2)
+            self.assertEqual([i['status'] for i in result], ['cached_global', 'downloaded', 'downloaded'])
+            path.unlink()
+            result = checker.fetch_dependencies(root, Path(tmp), '1.45.5.0')
+            self.assertEqual(result[0]['code'], 'global_export_unavailable')
+        invalid = {**ACTION, 'Data': json.dumps({'Steps': [call('%%../file')]})}
+        result = checker.fetch_dependencies(invalid, Path('/unused'), '1.45.5.0')
+        self.assertEqual(result[0]['code'], 'invalid_id')
+
+    def test_xsubprogram_type_preserves_json_and_metadata_edits(self):
+        child = {**ACTION, 'ActionType': 25, 'Data': json.dumps({'Variables': [
+            {'Key': 'text', 'Type': 0, 'IsInput': True, 'IsOutput': True}], 'Steps': []})}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'subprogram.json'
+            path.write_text(json.dumps(child))
+            report, code = checker.check(checker.ROOT / 'target/debug/quicker-rs', path)
+        self.assertEqual(code, 0)
+        for key in ['import', 'raw_round_trip', 'editor_round_trip', 'editor_metadata_edit']:
+            self.assertEqual(report[key]['status'], 'pass')
+
     def test_ids_and_official_links(self):
         self.assertEqual(checker.shared_id(ID.upper()), ID)
         self.assertEqual(checker.shared_id('https://getquicker.net/Sharedaction?code=' + ID), ID)

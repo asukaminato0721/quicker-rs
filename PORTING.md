@@ -197,13 +197,30 @@ establish completion of the port.
 - Repeated the public action download. Preservation still passes. The report now
   identifies the missing shared subprogram and revision instead of a missing runner.
 
+## Step 10: Download and inspect subprogram dependencies (2026-10-07)
+
+- Added recursive `--with-dependencies` downloads and `--dependency-dir` selection.
+  Calls inside shared and local global subprograms participate in the dependency
+  graph. The tool deduplicates revisions, bounds the graph, validates identity and
+  type, and checks recorded cache hashes. It does not execute downloaded steps.
+- Failed dependency downloads retain the parent report and report a blocker with
+  a specific error. The checker reads the selected dependency directory and
+  inspects child bodies. Added import and preservation support for type 25 exports.
+- Repeated the real public action download with dependencies. Both calls resolved
+  to one ID/revision request. HTTP 401 produced an authentication error in the
+  report and no dependency file. Successful authenticated download remains unverified.
+- Native tests: 106 passed, six opt-in tests ignored. Python tests: 17 passed.
+  Clippy and Wasm checks passed, with preview dead-code warnings. Tests use the
+  production Rust checker to detect missing runners inside downloaded dependencies.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Download and check shared subprogram dependencies. Implement missing modules
-   found in real downloads, including selected files, key operations, and run. Use the reports for
+1. Implement missing modules found in real downloads, including selected files,
+   key operations, and run. Validate shared subprogram execution when an export or
+   authenticated download is available. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument

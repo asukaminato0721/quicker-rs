@@ -98,6 +98,17 @@ execution remain unverified. Controlled tests cover local and cached shared call
 typed parameters, variable isolation, nested lookup, returns, failure outputs,
 recursion limits, cancellation during execution, and ID/revision mismatches.
 
+The download tool supports `--with-dependencies` and `--dependency-dir PATH`.
+On 2026-10-07, the public `Ref->Ob` download succeeded again. The recursive tool
+found two calls to the same shared subprogram revision and sent one dependency
+request. The server returned HTTP 401. The tool retained the root action and its
+preservation report, marked runtime status as blocked, and recorded
+`authentication_required` under `dependencies.items`. It created no dependency
+file from the failed response. Seventeen offline Python tests pass, including
+recursive downloads through global exports, cycles, deduplication, cache hash
+checks, ID/revision/type rejection, authenticated-error handling, and type 25
+round-trip preservation. These tests use controlled API responses for success.
+
 Quicker.exe delegates its loop runners to managed closure methods. The repeat
 body at RVA `0x3f1094` writes `count` before it evaluates `stopCondition`.
 It reads the iteration limit and start index once. It checks the stop condition

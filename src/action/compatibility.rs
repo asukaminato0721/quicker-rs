@@ -44,7 +44,7 @@ pub(crate) fn inspect(input: &str) -> Value {
     let action_type = original["ActionType"].as_u64().unwrap_or(0);
     let payload = original["Data"].as_str().unwrap_or("");
     match action_type {
-        24 => match parse_json_lenient::<Value>(payload, "Invalid workflow data") {
+        24 | 25 => match parse_json_lenient::<Value>(payload, "Invalid workflow data") {
             Ok(data) => {
                 // Include subprograms and unknown containers, even when the typed
                 // runtime parser does not know their fields. Paths are JSON pointers.

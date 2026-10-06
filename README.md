@@ -63,7 +63,7 @@ detection currently uses the existing X11/KDE integration and has not yet been
 verified on every compositor.
 
 The automation editor supports key sequences and a subset of Quicker action
-types 7, 11, and 24. Paste Quicker JSON in its import area. This is not universal
+types 7, 11, 24, and 25. Paste Quicker JSON in its import area. This is not universal
 compatibility with Quicker's Windows action ecosystem: Windows executables,
 COM/PowerShell integrations, remote templates, and unsupported step runners need
 Linux equivalents. Review imported actions before running them: actions can
@@ -162,6 +162,23 @@ The runtime does not download missing files. The checker reports missing depende
 and inspects resolved bodies without executing them. Server templates remain unsupported.
 List and dictionary inputs currently use value copies. Shared mutable object behavior
 still needs implementation before modules that mutate these objects are supported.
+
+Download and inspect shared dependencies with the action:
+
+```sh
+python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --public-export --with-dependencies
+```
+
+The tool writes dependencies under `.compat/subprograms` by default. Use
+`--dependency-dir PATH` to select a directory. The checker reads that directory
+for this invocation. To use these files in the application, set
+`QUICKER_SUBPROGRAM_DIR` to its absolute path when starting Quicker RS.
+The tool follows shared calls inside downloaded and local global subprograms.
+It deduplicates ID/revision pairs and limits the graph to 128 files and 32 levels.
+Cached downloads must match their recorded hash. A failed dependency download
+keeps the root report and records an error under `dependencies.items`.
+Official downloads require `QUICKER_API_TOKEN` when the API rejects anonymous access.
+Type 25 subprogram documents also support import, editing, and static inspection.
 
 | Exit code | Meaning |
 | --- | --- |

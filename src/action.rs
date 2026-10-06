@@ -372,14 +372,14 @@ impl Action {
             QUICKER_OPEN_ACTION_TYPE => {
                 document.launch_payload()?;
             }
-            QUICKER_PLUGIN_ACTION_TYPE => {
+            QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => {
                 if !document.use_template.unwrap_or(false) && document.has_data() {
                     document.data_payload()?;
                 }
             }
             action_type => {
                 return Err(format!(
-                    "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+                    "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
                 ));
             }
         }
@@ -570,7 +570,7 @@ impl LowCodePluginDraft {
                     steps: Vec::new(),
                 })
             }
-            QUICKER_PLUGIN_ACTION_TYPE => {
+            QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => {
                 if document.use_template.unwrap_or(false) && !document.has_data() {
                     return Err(
                         "Template-based Quicker actions cannot be opened in the low-code editor because the template body is not embedded"
@@ -597,7 +597,7 @@ impl LowCodePluginDraft {
                 })
             }
             action_type => Err(format!(
-                "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+                "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
             )),
         }
     }
@@ -1283,6 +1283,7 @@ impl PluginPipelineStorage {
 const QUICKER_KEYS_ACTION_TYPE: u32 = 7;
 const QUICKER_OPEN_ACTION_TYPE: u32 = 11;
 const QUICKER_PLUGIN_ACTION_TYPE: u32 = 24;
+const QUICKER_SUBPROGRAM_ACTION_TYPE: u32 = 25;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
@@ -2712,11 +2713,11 @@ fn execute_quicker_action_document(
     }
 
     match document.action_type {
-        QUICKER_PLUGIN_ACTION_TYPE => execute_quicker_plugin_steps(&document, control),
+        QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => execute_quicker_plugin_steps(&document, control),
         QUICKER_OPEN_ACTION_TYPE => execute_quicker_launch(&document),
         QUICKER_KEYS_ACTION_TYPE => execute_quicker_key_macro(&document, control),
         action_type => ExecResult::Err(format!(
-            "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+            "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
         )),
     }
 }
