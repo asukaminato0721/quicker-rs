@@ -55,12 +55,15 @@ python3 scripts/check-shared-action.py 6803b583-78f7-400d-a4c1-08de12ec7091 --pu
 
 On 2026-10-06, the request downloaded `Ref->Ob` and matched the recorded SHA-256.
 All preservation checks passed. The runtime report returned `blocked` and exit code 1.
-It identified `sys:subprogram` as a missing runner. The tool did not execute the action.
+It identified unresolved shared subprogram dependencies. The runtime now has a
+subprogram runner, but these network dependencies are not installed. The tool did
+not execute the action.
 
 Five other downloaded exports passed the same preservation checks.
 These files were `obPDF->Cit`, `xID->CITAVI`, `KnowPDF++`, `AnnoPDF++`, and
 [用QuickLook预览文件](https://www.getquicker.net/Common/Topics/ViewTopic/24595).
-All five also contain missing runners. Passing preservation checks does not
+The other Citavi exports also have unresolved subprogram dependencies. QuickLook
+has missing runners. Passing preservation checks does not
 establish execution compatibility with Citavi, QuickLook, or Windows APIs.
 
 ## Automated checks
@@ -81,6 +84,19 @@ application dependencies, permissions, platform behavior, or unknown option sema
 Reports always set `runtime.executed` to `false`.
 
 ## Control flow evidence
+
+The MSI subprogram body starts at RVA `0x3f7d80`. Its variable initializer at
+`0x2c2a30` uses `IsInput`. Its output helper at `0x2c3020` prefixes keys with `var:`.
+Local lookup compares `Name` and searches the current context before parent contexts.
+`GetSubProgramFromSharedAction` at `0x2ab22c` converts a downloaded workflow body
+to a subprogram. `Quicker.Common.ActionType.XSubProgram` has value 25.
+`DownloadSubProgramAsync` at `0x3d3730` uses `/SharedAction/Download` with ID,
+revision, and client version. An anonymous request for the real Citavi dependency
+`3748cecd-84b6-47f7-191e-08ddfab0d924`, revision 4, returned HTTP 401 on 2026-10-07.
+Authenticated dependency download and the original keyboard-layout subprogram's
+execution remain unverified. Controlled tests cover local and cached shared calls,
+typed parameters, variable isolation, nested lookup, returns, failure outputs,
+recursion limits, cancellation during execution, and ID/revision mismatches.
 
 Quicker.exe delegates its loop runners to managed closure methods. The repeat
 body at RVA `0x3f1094` writes `count` before it evaluates `stopCondition`.

@@ -6,6 +6,7 @@ mod preservation;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
+mod subprogram;
 mod window_steps;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -340,15 +341,6 @@ impl Action {
     /// Whether this action sends keyboard events to an external application.
     #[cfg(target_os = "linux")]
     pub fn needs_input_target(&self) -> bool {
-        fn has_input(steps: &[QuickerPluginStepDocument]) -> bool {
-            steps.iter().filter(|step| !step.disabled).any(|step| {
-                matches!(
-                    step.step_runner_key.as_str(),
-                    "sys:keyInput" | "sys:outputText" | "sys:getSelectedText"
-                ) || step.if_steps.as_deref().is_some_and(has_input)
-                    || step.else_steps.as_deref().is_some_and(has_input)
-            })
-        }
         let ActionKind::PluginPipeline { plugin } = &self.kind else {
             return false;
         };
@@ -358,7 +350,7 @@ impl Action {
         document.action_type == QUICKER_KEYS_ACTION_TYPE
             || document
                 .data_payload()
-                .is_ok_and(|data| has_input(&data.steps))
+                .is_ok_and(|data| subprogram::needs_input_target(&data, &[], 0))
     }
 
     pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
@@ -720,6 +712,8 @@ impl LowCodePluginDraft {
                         value_type: Some(0),
                         default_value: Some(String::new()),
                         save_state: Some(false),
+                        is_input: false,
+                        is_output: false,
                     })
                     .collect();
 
@@ -1411,6 +1405,10 @@ struct QuickerPluginVariable {
     default_value: Option<String>,
     #[serde(default)]
     save_state: Option<bool>,
+    #[serde(default)]
+    is_input: bool,
+    #[serde(default)]
+    is_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1983,6 +1981,7 @@ enum StepFlow {
     BreakLoop,
     NextIteration,
     Stop(Option<String>),
+    StopAction(Option<String>),
 }
 
 struct QuickerRuntime {
@@ -1993,6 +1992,9 @@ struct QuickerRuntime {
     action_state: HashMap<String, String>,
     control: Option<ActionExecutionControl>,
     clipboard_before_copy: Option<u64>,
+    subprogram_scopes: Vec<Vec<Value>>,
+    call_depth: usize,
+    dependency_dir: Option<std::path::PathBuf>,
 }
 
 impl QuickerRuntime {
@@ -2001,11 +2003,22 @@ impl QuickerRuntime {
         state_scope: String,
         control: Option<ActionExecutionControl>,
     ) -> Result<Self, String> {
+        Self::with_inputs(data, state_scope, control, &HashMap::new())
+    }
+
+    fn with_inputs(
+        data: &QuickerPluginData,
+        state_scope: String,
+        control: Option<ActionExecutionControl>,
+        inputs: &HashMap<String, Value>,
+    ) -> Result<Self, String> {
         let mut vars = HashMap::new();
         let mut variable_types = HashMap::new();
         for variable in &data.variables {
             let text = variable.default_value.as_deref().unwrap_or_default();
-            let value = if text.trim_start().starts_with("$=") {
+            let value = if let Some(value) = inputs.get(&variable.key) {
+                value.clone()
+            } else if text.trim_start().starts_with("$=") {
                 expression::evaluate(text, &vars)?
             } else {
                 Value::String(text.into())
@@ -2027,6 +2040,9 @@ impl QuickerRuntime {
             action_state,
             control,
             clipboard_before_copy: None,
+            subprogram_scopes: vec![data.sub_programs.clone()],
+            call_depth: 0,
+            dependency_dir: subprogram::dependency_dir(),
         })
     }
 
@@ -2526,7 +2542,19 @@ impl QuickerRuntime {
             Some(runner::StepRunner::Group) => {
                 self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))
             }
+            Some(runner::StepRunner::Subprogram) => self.run_subprogram(step),
             Some(runner::StepRunner::Stop) => {
+                let method = self
+                    .input_string_opt(&step.input_params, "method")?
+                    .unwrap_or_else(|| "default".into());
+                if method == "forcestop" {
+                    return Ok(StepFlow::StopAction(
+                        self.input_string_opt(&step.input_params, "showMessage")?,
+                    ));
+                }
+                if method != "default" {
+                    return Err(format!("Unsupported stop method: {method}"));
+                }
                 let is_error = self.input_bool(&step.input_params, "isError")?;
                 let message = self.input_string_opt(&step.input_params, "showMessage")?;
                 if is_error {
@@ -2722,10 +2750,12 @@ fn execute_quicker_plugin_steps(
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
             _ => ExecResult::Ok,
         },
-        Ok(StepFlow::Stop(message)) => match message.or(runtime.last_message) {
-            Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
-            _ => ExecResult::Ok,
-        },
+        Ok(StepFlow::Stop(message) | StepFlow::StopAction(message)) => {
+            match message.or(runtime.last_message) {
+                Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
+                _ => ExecResult::Ok,
+            }
+        }
         Ok(StepFlow::BreakLoop | StepFlow::NextIteration) => {
             ExecResult::Err("Loop control requires an enclosing loop".into())
         }

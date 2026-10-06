@@ -57,17 +57,15 @@ pub(crate) fn inspect(input: &str) -> Value {
                         "warning",
                     );
                 }
-                if data["SubPrograms"]
-                    .as_array()
-                    .is_some_and(|v| !v.is_empty())
-                {
-                    issue(
-                        &mut issues,
-                        "/Data/SubPrograms",
-                        "subprogram_definitions_not_executable",
-                        "warning",
-                    );
-                }
+                inspect_subprogram_calls(
+                    &data,
+                    "/Data",
+                    &[],
+                    &mut Vec::new(),
+                    &mut 0,
+                    &mut steps,
+                    &mut issues,
+                );
             }
             Err(_) => issue(
                 &mut issues,
@@ -156,6 +154,81 @@ fn issue(issues: &mut Vec<Value>, path: &str, code: &str, severity: &str) {
     issues.push(json!({"path": path, "code": code, "severity": severity}));
 }
 
+fn inspect_subprogram_calls(
+    data: &Value,
+    path: &str,
+    parent_scopes: &[Vec<Value>],
+    stack: &mut Vec<String>,
+    count: &mut usize,
+    steps: &mut Vec<Value>,
+    issues: &mut Vec<Value>,
+) {
+    let mut scopes = parent_scopes.to_vec();
+    scopes.push(data["SubPrograms"].as_array().cloned().unwrap_or_default());
+    let mut pending = vec![(&data["Steps"], format!("{path}/Steps"))];
+    while let Some((value, path)) = pending.pop() {
+        if let Some(array) = value.as_array() {
+            pending.extend(
+                array
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (v, format!("{path}/{i}"))),
+            );
+            continue;
+        }
+        if value["Disabled"] == true {
+            continue;
+        }
+        for key in ["IfSteps", "ElseSteps"] {
+            if value[key].is_array() {
+                pending.push((&value[key], format!("{path}/{key}")));
+            }
+        }
+        if value["StepRunnerKey"] != "sys:subprogram" {
+            continue;
+        }
+        let binding = &value["InputParams"]["subProgram"];
+        let name = binding["Value"].as_str().unwrap_or_default();
+        if binding["VarKey"].is_string() || name.starts_with("$=") || name.contains('{') {
+            issue(
+                issues,
+                &path,
+                "dynamic_subprogram_requires_validation",
+                "warning",
+            );
+            continue;
+        }
+        if stack.iter().any(|v| v == name) {
+            issue(
+                issues,
+                &path,
+                "recursive_subprogram_depth_requires_validation",
+                "warning",
+            );
+            continue;
+        }
+        *count += 1;
+        if *count > 256 || stack.len() >= 32 {
+            issue(issues, &path, "subprogram_inspection_limit", "blocker");
+            return;
+        }
+        match subprogram::resolve(name, &scopes, subprogram::dependency_dir().as_deref()) {
+            Ok(program) => {
+                if program.variables.iter().any(|v| v.is_input && matches!(v.value_type, Some(4 | 10))) {
+                    issue(issues, &path, "subprogram_collection_reference_semantics_require_validation", "warning");
+                }
+                let data = serde_json::to_value(program).expect("workflow serialization");
+                let child_path = format!("{path}/ResolvedSubprogram");
+                visit(&data, &child_path, false, 0, steps, issues);
+                stack.push(name.into());
+                inspect_subprogram_calls(&data, &child_path, &scopes, stack, count, steps, issues);
+                stack.pop();
+            }
+            Err(error) => issues.push(json!({"path": path, "code": "unresolved_subprogram", "severity": "blocker", "reference": name, "detail": error})),
+        }
+    }
+}
+
 fn visit(
     value: &Value,
     path: &str,
@@ -239,6 +312,7 @@ fn visit(
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
     let option: Option<(&str, &[&str], &str)> = match runner {
+        "sys:stop" => Some(("method", &["default", "forcestop"], "default")),
         "sys:stringProcess" => Some(("method", &["toLower", "urlEncode"], "")),
         "sys:stateStorage" => Some(("type", &["readActionState", "saveActionState"], "")),
         "sys:readFile" => Some(("type", &["image"], "")),
@@ -419,6 +493,32 @@ mod tests {
         assert!(issues
             .iter()
             .any(|i| i["path"] == "/Data/SubPrograms/0/Steps/0"));
+    }
+
+    #[test]
+    fn subprogram_resolution_reports_missing_and_nested_dependencies() {
+        let call = json!({"StepRunnerKey":"sys:subprogram","InputParams":{"subProgram":{"Value":"local"}}});
+        let data = json!({"Steps":[call],"SubPrograms":[{"Name":"local","Steps":[
+            {"StepRunnerKey":"sys:subprogram","InputParams":{"subProgram":{"Value":"missing"}}}
+        ]}]});
+        let report = inspect(
+            &json!({"ActionType":24,"Title":"Subprogram", "Data":data.to_string()}).to_string(),
+        );
+        assert_eq!(report["editor_round_trip"]["status"], "pass");
+        assert_eq!(exit_code(&report), 1);
+        assert!(report["runtime"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["code"] == "unresolved_subprogram"
+                && i["reference"] == "missing"
+                && i["path"].as_str().unwrap().contains("ResolvedSubprogram")));
+        let mut data = data;
+        data["SubPrograms"][0]["Steps"] = json!([]);
+        let report = inspect(
+            &json!({"ActionType":24,"Title":"Subprogram", "Data":data.to_string()}).to_string(),
+        );
+        assert_eq!(exit_code(&report), 0);
     }
 
     #[test]

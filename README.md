@@ -147,6 +147,22 @@ Program paths are executable paths without shell arguments. Startup waits up to
 five seconds. Hotkey activation waits up to one second. Native Wayland window
 activation remains unsupported.
 
+`sys:subprogram` runs action-local subprograms by name. Each call has fresh typed
+variables. Inputs and outputs use `var:KEY` bindings and the variable's `IsInput`
+and `IsOutput` flags. Calls can use definitions in the current or parent scope.
+Normal `sys:stop` returns to the caller. `method=forcestop` stops the whole action.
+Cancellation propagates through calls. Calls have a depth limit of 32.
+
+External subprograms load from `$XDG_CONFIG_HOME/quicker-rs/subprograms`, or
+`QUICKER_SUBPROGRAM_DIR`. A shared `@@GUID@REVISION@TITLE` reference reads
+`shared/GUID/REVISION.json`. This file must be a SharedActionDto with the matching
+`Id`, `Revision`, `ActionType: 25`, and workflow `Data`. A global `%%GUID` reference
+reads `global/GUID.json`, containing the exported subprogram and matching `Id`.
+The runtime does not download missing files. The checker reports missing dependencies
+and inspects resolved bodies without executing them. Server templates remain unsupported.
+List and dictionary inputs currently use value copies. Shared mutable object behavior
+still needs implementation before modules that mutate these objects are supported.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |

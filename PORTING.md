@@ -177,13 +177,33 @@ establish completion of the port.
   lack only the subprogram runner. QuickLook still lacks selected-file, key-operation,
   and run runners. These checks do not establish execution of Windows applications.
 
+## Step 9: Execute and resolve subprogram calls (2026-10-07)
+
+- Added local subprogram lookup by name through current and parent scopes.
+  Calls initialize independent typed variables and transfer declared `var:` inputs
+  and outputs. Normal returns stay within the call. Forced stops leave the action.
+- Added bounded recursion, cancellation propagation, failure outputs, and action
+  state sharing. Input-target detection follows calls, including nested definitions.
+- Added external dependency loading for global exports and shared revision files.
+  The loader checks IDs, revisions, type 25, size limits, and template requirements.
+  Static reports inspect resolved bodies and block unresolved dependencies.
+- Checked the call body, variable mapping, lookup order, action type, and download
+  route against MSI managed methods. The real shared dependency returned HTTP 401
+  without authentication. Shared collection mutation and server templates remain gaps.
+- Native tests: 106 passed, six opt-in tests ignored. Python tests: 11 passed.
+  Clippy and Wasm checks passed, with existing preview dead-code warnings.
+  Tests cover local and pinned shared calls, nested lookup, return and failure
+  behavior, cancellation during execution, and mismatched IDs and revisions.
+- Repeated the public action download. Preservation still passes. The report now
+  identifies the missing shared subprogram and revision instead of a missing runner.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.
 
-1. Implement missing modules found in real downloads. Prioritize subprograms,
-   selected files, key operations, and run. Use the reports for
+1. Download and check shared subprogram dependencies. Implement missing modules
+   found in real downloads, including selected files, key operations, and run. Use the reports for
    regression checks and add controlled execution tests.
 2. Plugin runtime completeness, explicit unsupported-step diagnostics,
    cancellation of dialogs and every subprocess, reliable launch argument

@@ -54,7 +54,7 @@ impl QuickerRuntime {
             match self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))? {
                 StepFlow::Continue | StepFlow::NextIteration => {}
                 StepFlow::BreakLoop => break,
-                stop @ StepFlow::Stop(_) => return Ok(stop),
+                stop @ (StepFlow::Stop(_) | StepFlow::StopAction(_)) => return Ok(stop),
             }
             iteration = iteration.checked_add(1).ok_or("Repeat counter overflow")?;
             if count == -1 || iteration < count {
@@ -107,7 +107,7 @@ impl QuickerRuntime {
             match self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))? {
                 StepFlow::Continue | StepFlow::NextIteration => {}
                 StepFlow::BreakLoop => break,
-                stop @ StepFlow::Stop(_) => return Ok(stop),
+                stop @ (StepFlow::Stop(_) | StepFlow::StopAction(_)) => return Ok(stop),
             }
         }
         Ok(StepFlow::Continue)
