@@ -95,7 +95,7 @@ impl QuickerApp {
         }
     }
 
-    pub(super) fn poll_action_result(&mut self) {
+    pub(super) fn poll_action_result(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.action_result_rx else {
             return;
         };
@@ -105,6 +105,12 @@ impl QuickerApp {
                 self.action_control = None;
                 self.pending_action_name = None;
                 self.action_result_rx = None;
+                if self.panel_hidden
+                    && (matches!(&message.result, ExecResult::Err(_))
+                        || matches!(&message.result, ExecResult::OkWithMessage(text) if text.len() > 100))
+                {
+                    self.show_panel(ctx);
+                }
                 self.handle_exec_result(&message.action_name, message.result);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -114,6 +120,7 @@ impl QuickerApp {
                     .unwrap_or_else(|| "Action".into());
                 self.action_control = None;
                 self.action_result_rx = None;
+                self.show_panel(ctx);
                 self.show_toast(format!("{action_name} stopped unexpectedly"), true);
             }
             Err(mpsc::TryRecvError::Empty) => {}

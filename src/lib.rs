@@ -9,6 +9,8 @@ mod process;
 mod search;
 #[cfg(not(target_arch = "wasm32"))]
 mod storage;
+#[cfg(target_os = "linux")]
+mod x11;
 
 use app::QuickerApp;
 #[cfg(not(target_arch = "wasm32"))]
@@ -74,6 +76,8 @@ pub fn run_native() -> eframe::Result<()> {
         );
         return Ok(());
     }
+    // Capture before eframe creates and focuses the launcher's window.
+    let initial_focus = focus::detect_focused_process();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([config.panel_width, config.panel_height])
@@ -90,6 +94,7 @@ pub fn run_native() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             let mut app = QuickerApp::new(cc, config);
+            app.set_initial_focus(initial_focus);
             app.set_initial_visibility(hidden);
             #[cfg(target_os = "linux")]
             app.set_activation(activation);

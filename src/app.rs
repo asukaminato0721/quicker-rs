@@ -134,6 +134,8 @@ pub struct QuickerApp {
     config: Config,
     #[cfg(target_os = "linux")]
     activation: Option<crate::activation::Server>,
+    #[cfg(target_os = "linux")]
+    deferred_input_action: Option<(Action, focus::FocusedProcess)>,
     quitting: bool,
     search: SearchEngine,
     #[cfg(not(target_arch = "wasm32"))]
@@ -198,6 +200,8 @@ impl QuickerApp {
             config,
             #[cfg(target_os = "linux")]
             activation: None,
+            #[cfg(target_os = "linux")]
+            deferred_input_action: None,
             quitting: false,
             search: SearchEngine::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -232,6 +236,11 @@ impl QuickerApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_initial_focus(&mut self, process: Option<focus::FocusedProcess>) {
+        self.focus_tracker.observe(process);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn set_initial_visibility(&mut self, hidden: bool) {
         self.panel_hidden = hidden;
     }
@@ -242,7 +251,7 @@ impl QuickerApp {
     }
 
     fn show_panel(&mut self, ctx: &egui::Context) {
-        self.poll_focused_process();
+        self.refresh_focused_process();
         self.panel_hidden = false;
         self.view = View::Panel;
         self.needs_focus_profile_sync = true;
@@ -381,24 +390,67 @@ impl QuickerApp {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let action_name = action.name.clone();
-            let action_clone = action.clone();
-            let control = ActionExecutionControl::new();
-            let (tx, rx) = mpsc::channel();
-            let repaint_ctx = ctx.clone();
-            self.action_control = Some(control.clone());
-            self.pending_action_name = Some(action_name.clone());
-            self.action_result_rx = Some(rx);
-
-            thread::spawn(move || {
-                let result = action_clone.execute_with_control(Some(&control));
-                let _ = tx.send(ActionExecutionMessage {
-                    action_name,
-                    result,
-                });
-                repaint_ctx.request_repaint();
-            });
+            #[cfg(target_os = "linux")]
+            let input_target = if action.needs_input_target() {
+                self.refresh_focused_process();
+                let Some(target) = self.focus_tracker.current_external().cloned() else {
+                    self.show_toast(
+                        "Focus a target application before running keyboard automation".into(),
+                        true,
+                    );
+                    return;
+                };
+                if !self.panel_hidden {
+                    // Start on the next frame, after eframe has applied the hide
+                    // command. The worker then verifies the recipient's focus.
+                    self.hide_panel(ctx);
+                    self.deferred_input_action = Some((action.clone(), target));
+                    ctx.request_repaint();
+                    return;
+                }
+                Some(target)
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "linux"))]
+            let input_target = None;
+            self.start_action(ctx, action, input_target);
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_action(
+        &mut self,
+        ctx: &egui::Context,
+        action: &Action,
+        _input_target: Option<focus::FocusedProcess>,
+    ) {
+        let action_name = action.name.clone();
+        let action_clone = action.clone();
+        let control = ActionExecutionControl::new();
+        let (tx, rx) = mpsc::channel();
+        let repaint_ctx = ctx.clone();
+        self.action_control = Some(control.clone());
+        self.pending_action_name = Some(action_name.clone());
+        self.action_result_rx = Some(rx);
+
+        thread::spawn(move || {
+            #[cfg(target_os = "linux")]
+            let focus_result = _input_target
+                .as_ref()
+                .map_or(Ok(()), |target| crate::x11::restore_focus(target, &control));
+            #[cfg(not(target_os = "linux"))]
+            let focus_result: Result<(), String> = Ok(());
+            let result = match focus_result {
+                Ok(()) => action_clone.execute_with_control(Some(&control)),
+                Err(err) => ExecResult::Err(err),
+            };
+            let _ = tx.send(ActionExecutionMessage {
+                action_name,
+                result,
+            });
+            repaint_ctx.request_repaint();
+        });
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -475,6 +527,10 @@ impl QuickerApp {
             return;
         }
 
+        self.refresh_focused_process();
+    }
+
+    fn refresh_focused_process(&mut self) {
         self.last_focus_poll = Instant::now();
         if self.focus_tracker.observe(focus::detect_focused_process()) {
             self.needs_focus_profile_sync = true;
@@ -928,7 +984,11 @@ impl eframe::App for QuickerApp {
         }
         self.show_startup_notice_once();
         self.handle_global_hotkey(ctx);
-        self.poll_action_result();
+        self.poll_action_result(ctx);
+        #[cfg(target_os = "linux")]
+        if let Some((action, target)) = self.deferred_input_action.take() {
+            self.start_action(ctx, &action, Some(target));
+        }
 
         // Handle Escape key
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {

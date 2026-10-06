@@ -13,11 +13,12 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool imagemagick fonts-noto-cjk
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libxcb1-dev libx11-dev libxkbcommon-dev libgl1-mesa-dev xvfb xauth xdotool xterm imagemagick fonts-noto-cjk
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all-targets --locked
       - run: cargo check --target wasm32-unknown-unknown --lib --locked
       - run: cargo build --locked
       - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-x11.py
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' python3 scripts/smoke-input-x11.py
       - run: xvfb-run -a cargo test clipboard_persists_after_action_worker_exits -- --ignored

@@ -60,20 +60,37 @@ establish completion of the port.
   Xvfb. Desktop-entry validation and `git diff --check` passed.
 - Added desktop/icon assets, Makefile installation, Linux CI, and README.
 
+## Step 2: X11 input target (2026-10-06)
+
+- Capture the target window before first startup and immediately before showing
+  the panel. Keep the last external window while the launcher has focus.
+- Hide the panel before starting keyboard workflows, then restore the recorded
+  recipient through the window manager and verify actual input focus. Closed
+  targets stop execution; errors reopen the panel.
+- Handle nested input steps and disabled branches. Pass literal text after `--`
+  to xdotool so leading dashes are not interpreted as options.
+- `scripts/smoke-input-x11.py` verifies real terminal input, focus, panel hiding,
+  and closed-target failure. Passed on bare Xvfb and KWin X11, including visible
+  first startup (`--visible-start`) and hidden startup.
+- Native tests: 65 passed, one display-dependent test ignored. Native Clippy
+  passed with warnings denied. Wasm check passed with existing dead-code warnings.
+
 ## Next implementation priorities (goal remains active)
 
-1. Restore the target application's focus before keyboard/text automation;
-   verify with an actual recipient application. Current macros can hit the panel.
-2. Global mouse activation and pointer placement on X11; native Wayland
-   activation/input/focus support with explicit capability reporting.
-3. Per-action hotkeys, complete profile management/navigation and action
-   organization (reorder, duplicate, move, undo deletion).
-4. Lossless visual editing of imported workflows: currently the builder can
+The user emphasized plugin support. Prioritize compatibility and executable
+plugin workflows over additional launcher conveniences.
+
+1. Lossless visual editing of imported workflows: currently the builder can
    discard variables, metadata, flags, or step properties it cannot represent.
    Raw import/export is preserved, but that alone does not finish the editor.
-5. Workflow runtime completeness, cancellation of dialogs and every subprocess,
-   reliable launch argument parsing, and focused end-to-end automation tests.
-6. Verify release installation/uninstallation in a staging directory and native
+2. Plugin runtime completeness, explicit unsupported-step diagnostics,
+   cancellation of dialogs and every subprocess, reliable launch argument
+   parsing, and focused end-to-end tests of representative plugins.
+3. Native Wayland activation/input/focus support with explicit capability
+   reporting; global mouse activation and pointer placement on X11.
+4. Per-action hotkeys, complete profile management/navigation and action
+   organization (reorder, duplicate, move, undo deletion).
+5. Verify release installation/uninstallation in a staging directory and native
    Wayland behavior. CI has been authored locally but has not run remotely.
 
 The current pass does not establish completion of the Linux port.

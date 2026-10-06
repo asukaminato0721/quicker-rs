@@ -316,6 +316,30 @@ impl ActionExecutionControl {
 }
 
 impl Action {
+    /// Whether this action sends keyboard events to an external application.
+    #[cfg(target_os = "linux")]
+    pub fn needs_input_target(&self) -> bool {
+        fn has_input(steps: &[QuickerPluginStepDocument]) -> bool {
+            steps.iter().filter(|step| !step.disabled).any(|step| {
+                matches!(
+                    step.step_runner_key.as_str(),
+                    "sys:keyInput" | "sys:outputText"
+                ) || step.if_steps.as_deref().is_some_and(has_input)
+                    || step.else_steps.as_deref().is_some_and(has_input)
+            })
+        }
+        let ActionKind::PluginPipeline { plugin } = &self.kind else {
+            return false;
+        };
+        let Ok(document) = parse_quicker_action_document(&plugin.quicker_json) else {
+            return false;
+        };
+        document.action_type == QUICKER_KEYS_ACTION_TYPE
+            || document
+                .data_payload()
+                .is_ok_and(|data| has_input(&data.steps))
+    }
+
     pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
         match &self.kind {
             ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json(),
@@ -4101,6 +4125,7 @@ fn type_input_text(text: &str) -> Result<(), String> {
         .arg("--delay")
         .arg("0")
         .arg("--clearmodifiers")
+        .arg("--")
         .arg(text)
         .status()
         .map_err(|err| format!("Failed to invoke xdotool: {err}"))
@@ -4467,6 +4492,42 @@ fn test_delete_file_path(path: &str) -> Option<Result<(), String>> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn input_target_detection_handles_nested_and_disabled_steps() {
+        let flow = |steps: Value| {
+            Action::from_quicker_plugin_json(
+                &serde_json::json!({
+                    "ActionType": 24,
+                    "Title": "Input detection",
+                    "Data": serde_json::json!({ "Steps": steps }).to_string(),
+                })
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert!(
+            Action::from_quicker_plugin_json(include_str!("../tests/fixtures/key-macro.json"))
+                .unwrap()
+                .needs_input_target()
+        );
+        assert!(
+            !Action::from_quicker_plugin_json(include_str!("../tests/fixtures/open-url.json"))
+                .unwrap()
+                .needs_input_target()
+        );
+        assert!(flow(serde_json::json!([{
+            "StepRunnerKey": "sys:simpleIf",
+            "ElseSteps": [{"StepRunnerKey": "sys:outputText"}]
+        }]))
+        .needs_input_target());
+        assert!(!flow(serde_json::json!([{
+            "StepRunnerKey": "sys:simpleIf", "Disabled": true,
+            "IfSteps": [{"StepRunnerKey": "sys:keyInput"}]
+        }, {"StepRunnerKey": "sys:outputText", "Disabled": true}]))
+        .needs_input_target());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

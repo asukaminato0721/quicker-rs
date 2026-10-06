@@ -722,6 +722,7 @@ mod tests {
 
     fn focused_process(name: &str, path: &str) -> FocusedProcess {
         FocusedProcess {
+            window_id: "123".into(),
             app_name: name.into(),
             process_id: 123,
             process_path: path.into(),

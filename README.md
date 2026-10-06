@@ -43,9 +43,10 @@ Launching a second instance shows the existing panel. Supported commands:
 On Linux, closing the window or pressing Escape at the panel root hides it.
 Use **Quit** or `--quit` to exit. Escape during execution cancels the action.
 The current right-drag radial menu operates inside the panel; global mouse
-activation is still pending. Wayland keyboard injection and focus restoration
-are also pending, so keyboard macros are not yet reliable for native Wayland
-applications.
+activation is still pending. On X11, keyboard actions hide the panel and
+restore the captured target window before execution; a closed or unfocusable
+target stops the action. Native Wayland keyboard input is not yet implemented
+and these actions report an error.
 
 ## Actions and profiles
 
