@@ -11,7 +11,7 @@ pub(crate) fn inspect(input: &str) -> Value {
         "editor_round_trip": {"status": "not_checked"},
         "editor_metadata_edit": {"status": "not_checked"},
         "runtime": {"executed": false, "status": "not_checked", "steps": [], "issues": [],
-            "scope": "Static runner inventory and selected options only; expressions, applications, dependencies, permissions and behavior need runtime validation."}
+            "scope": "Static runner, expression syntax, and selected option checks. Value types, applications, dependencies, permissions, and behavior need runtime validation."}
     });
     let original: Value = match parse_json_lenient(input, "Invalid Quicker JSON") {
         Ok(value) => value,
@@ -166,6 +166,22 @@ fn visit(
     match value {
         Value::Object(object) => {
             let disabled = disabled || object.get("Disabled") == Some(&Value::Bool(true));
+            if !disabled {
+                for key in ["Value", "DefaultValue"] {
+                    if key == "Value" && object.get("VarKey").is_some_and(Value::is_string) {
+                        continue;
+                    }
+                    if let Some(text) = object
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|s| s.trim_start().starts_with("$="))
+                    {
+                        if let Err(error) = expression::validate(text) {
+                            issues.push(json!({"path": format!("{path}/{key}"), "code": "unsupported_expression", "severity": "blocker", "detail": error}));
+                        }
+                    }
+                }
+            }
             if let Some(key) = object.get("StepRunnerKey").and_then(Value::as_str) {
                 let implemented = runner::StepRunner::from_key(key).is_some();
                 steps.push(json!({"path": path, "runner": key, "disabled": disabled, "runner_implemented": implemented}));

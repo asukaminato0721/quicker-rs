@@ -117,6 +117,13 @@ step runners and selected unsupported options, including nested steps and subpro
 Disabled branches do not create runtime blockers. The checker never executes
 the imported action. Runner availability does not prove compatible behavior.
 
+The runtime evaluates a subset of `$=` expressions. This includes arithmetic,
+comparisons, Boolean operators, conditional expressions, indexes, and selected
+string methods. It preserves short-circuit behavior. Unknown syntax returns an
+error. The evaluator does not provide arbitrary C# code or .NET host APIs.
+It uses ordinal string matching. Case-insensitive ordinal matching currently
+requires ASCII text. Reports check expression syntax, but runtime types still need validation.
+
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Preservation checks passed. No known static blockers. Runtime validation remains required. |

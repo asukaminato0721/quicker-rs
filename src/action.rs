@@ -1,6 +1,9 @@
 pub(crate) mod compatibility;
+mod expression;
 mod preservation;
 mod runner;
+#[cfg(test)]
+mod runtime_tests;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::process::{output as run_command_for_output, status as run_command_for_status};
@@ -1979,6 +1982,7 @@ enum StepFlow {
 
 struct QuickerRuntime {
     vars: HashMap<String, Value>,
+    variable_types: HashMap<String, u8>,
     last_message: Option<String>,
     state_scope: String,
     action_state: HashMap<String, String>,
@@ -1990,23 +1994,33 @@ impl QuickerRuntime {
         data: &QuickerPluginData,
         state_scope: String,
         control: Option<ActionExecutionControl>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let mut vars = HashMap::new();
+        let mut variable_types = HashMap::new();
         for variable in &data.variables {
-            vars.insert(
-                variable.key.clone(),
-                Value::String(variable.default_value.clone().unwrap_or_default()),
-            );
+            let text = variable.default_value.as_deref().unwrap_or_default();
+            let value = if text.trim_start().starts_with("$=") {
+                expression::evaluate(text, &vars)?
+            } else {
+                Value::String(text.into())
+            };
+            let value = expression::convert(value, variable.value_type)
+                .map_err(|err| format!("Variable {}: {err}", variable.key))?;
+            vars.insert(variable.key.clone(), value);
+            if let Some(kind) = variable.value_type {
+                variable_types.insert(variable.key.clone(), kind);
+            }
         }
         let action_state = load_action_state_scope(&state_scope);
 
-        Self {
+        Ok(Self {
             vars,
+            variable_types,
             last_message: None,
             state_scope,
             action_state,
             control,
-        }
+        })
     }
 
     fn run_steps(&mut self, steps: &[QuickerPluginStepDocument]) -> Result<StepFlow, String> {
@@ -2039,13 +2053,13 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::StateStorage) => {
                 let mode = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_default();
                 let key = self.input_string(&step.input_params, "key")?;
                 match mode.as_str() {
                     "readActionState" => {
                         let default_value = self
-                            .input_string_opt(&step.input_params, "defaultValue")
+                            .input_string_opt(&step.input_params, "defaultValue")?
                             .unwrap_or_default();
                         let value = self
                             .action_state
@@ -2053,18 +2067,18 @@ impl QuickerRuntime {
                             .cloned()
                             .unwrap_or(default_value);
                         let is_empty = value.trim().is_empty();
-                        self.assign_output(&step.output_params, "value", Value::String(value));
-                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "value", Value::String(value))?;
+                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     "saveActionState" => {
                         let value = self
-                            .input_string_opt(&step.input_params, "value")
+                            .input_string_opt(&step.input_params, "value")?
                             .unwrap_or_default();
                         self.action_state.insert(key.clone(), value.clone());
                         save_action_state_scope(&self.state_scope, &self.action_state)?;
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     other => Err(format!("Unsupported stateStorage type: {other}")),
@@ -2072,27 +2086,27 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::MsgBox) => {
                 let title = self
-                    .input_string_opt(&step.input_params, "title")
+                    .input_string_opt(&step.input_params, "title")?
                     .unwrap_or_default();
                 let message = self.input_string(&step.input_params, "message")?;
                 show_message_box(&title, &message)?;
-                self.assign_output(&step.output_params, "okOrYes", Value::Bool(true));
+                self.assign_output(&step.output_params, "okOrYes", Value::Bool(true))?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::SelectFolder) => {
                 let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")
+                    .input_string_opt(&step.input_params, "prompt")?
                     .unwrap_or_default();
-                let init_dir = self.input_string_opt(&step.input_params, "initDir");
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let init_dir = self.input_string_opt(&step.input_params, "initDir")?;
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 match select_folder_dialog(&prompt, init_dir.as_deref()) {
                     Ok(path) => {
-                        self.assign_output(&step.output_params, "path", Value::String(path));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "path", Value::String(path))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2103,26 +2117,27 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::UserInput) => {
                 let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")
+                    .input_string_opt(&step.input_params, "prompt")?
                     .unwrap_or_default();
                 let default_value = self
-                    .input_string_opt(&step.input_params, "defaultValue")
+                    .input_string_opt(&step.input_params, "defaultValue")?
                     .unwrap_or_default();
                 let multiline = matches!(
-                    self.input_string_opt(&step.input_params, "type").as_deref(),
+                    self.input_string_opt(&step.input_params, "type")?
+                        .as_deref(),
                     Some("multiline")
                 );
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 match prompt_user_input_dialog(&prompt, &default_value, multiline) {
                     Ok(text) => {
                         let is_empty = text.trim().is_empty();
-                        self.assign_output(&step.output_params, "textValue", Value::String(text));
-                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "textValue", Value::String(text))?;
+                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2133,7 +2148,7 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::Delay) => {
                 let delay_ms = self
-                    .input_string_opt(&step.input_params, "delayMs")
+                    .input_string_opt(&step.input_params, "delayMs")?
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
                 sleep_millis(delay_ms, self.control.as_ref())?;
@@ -2159,9 +2174,9 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::GetClipboardText) => {
                 let format = self
-                    .input_string_opt(&step.input_params, "format")
+                    .input_string_opt(&step.input_params, "format")?
                     .unwrap_or_else(|| "UnicodeText".into());
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 let result = match format.as_str() {
                     "Html" => read_clipboard_html(),
                     _ => read_clipboard_text(),
@@ -2169,12 +2184,12 @@ impl QuickerRuntime {
 
                 match result {
                     Ok(text) => {
-                        self.assign_output(&step.output_params, "output", Value::String(text));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "output", Value::String(text))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2185,15 +2200,15 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::WriteClipboard) => {
                 let clipboard_type = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_else(|| "auto".into())
                     .to_ascii_lowercase();
-                let success_msg = self.input_string_opt(&step.input_params, "successMsg");
+                let success_msg = self.input_string_opt(&step.input_params, "successMsg")?;
 
                 match clipboard_type.as_str() {
                     "html" => {
                         let html = self.input_string(&step.input_params, "html")?;
-                        let alt_text = self.input_string_opt(&step.input_params, "text");
+                        let alt_text = self.input_string_opt(&step.input_params, "text")?;
                         write_clipboard_html(&html, alt_text.as_deref())?;
                     }
                     "text" => {
@@ -2201,15 +2216,17 @@ impl QuickerRuntime {
                         write_clipboard_text(&text)?;
                     }
                     _ => {
-                        let text = self
-                            .input_string_opt(&step.input_params, "input")
-                            .or_else(|| self.input_string_opt(&step.input_params, "text"))
-                            .unwrap_or_default();
+                        let text = match self.input_string_opt(&step.input_params, "input")? {
+                            Some(text) => text,
+                            None => self
+                                .input_string_opt(&step.input_params, "text")?
+                                .unwrap_or_default(),
+                        };
                         write_clipboard_text(&text)?;
                     }
                 }
 
-                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                 if let Some(message) = success_msg.filter(|value| !value.is_empty()) {
                     self.last_message = Some(message);
                 }
@@ -2219,15 +2236,15 @@ impl QuickerRuntime {
                 let input = self.input_string(&step.input_params, "data")?;
                 let pattern = self.input_string(&step.input_params, "pattern")?;
                 let get_group = self
-                    .input_string_opt(&step.input_params, "getGroup")
+                    .input_string_opt(&step.input_params, "getGroup")?
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(0);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 let regex = compile_step_regex(
                     &pattern,
-                    self.input_bool(&step.input_params, "ignoreCase"),
-                    self.input_bool(&step.input_params, "singleLine"),
-                    self.input_bool(&step.input_params, "multiLine"),
+                    self.input_bool(&step.input_params, "ignoreCase")?,
+                    self.input_bool(&step.input_params, "singleLine")?,
+                    self.input_bool(&step.input_params, "multiLine")?,
                 )?;
 
                 let captures = regex
@@ -2240,12 +2257,12 @@ impl QuickerRuntime {
                             .get(get_group)
                             .map(|capture| capture.as_str().to_string())
                             .unwrap_or_default();
-                        self.assign_regex_outputs(&step.output_params, &matched);
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_regex_outputs(&step.output_params, &matched)?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     None => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(format!("Regex did not match pattern: {pattern}"))
                         } else {
@@ -2257,33 +2274,33 @@ impl QuickerRuntime {
             Some(runner::StepRunner::StringProcess) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let method = self
-                    .input_string_opt(&step.input_params, "method")
+                    .input_string_opt(&step.input_params, "method")?
                     .unwrap_or_default();
                 let output = match method.as_str() {
                     "toLower" => input.to_lowercase(),
                     "urlEncode" => urlencoding::encode(&input).into_owned(),
                     other => return Err(format!("Unsupported stringProcess method: {other}")),
                 };
-                self.assign_output(&step.output_params, "output", Value::String(output));
-                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                self.assign_output(&step.output_params, "output", Value::String(output))?;
+                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::Download) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 let save_path = self.input_string(&step.input_params, "savePath")?;
                 let save_name = self
-                    .input_string_opt(&step.input_params, "saveName")
+                    .input_string_opt(&step.input_params, "saveName")?
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| derive_download_file_name(&url));
                 let options = DownloadRequestOptions::from_inputs(
-                    self.input_string_opt(&step.input_params, "ua")
+                    self.input_string_opt(&step.input_params, "ua")?
                         .filter(|value| !value.trim().is_empty()),
-                    self.input_string_opt(&step.input_params, "header")
+                    self.input_string_opt(&step.input_params, "header")?
                         .filter(|value| !value.trim().is_empty()),
-                    self.input_string_opt(&step.input_params, "cookie")
+                    self.input_string_opt(&step.input_params, "cookie")?
                         .filter(|value| !value.trim().is_empty()),
                 );
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 match download_to_file(
                     &url,
                     &save_path,
@@ -2292,16 +2309,16 @@ impl QuickerRuntime {
                     self.control.as_ref(),
                 ) {
                     Ok(saved_path) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         self.assign_output(
                             &step.output_params,
                             "savedPath",
                             Value::String(saved_path),
-                        );
+                        )?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2312,15 +2329,19 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::ReadFile) => {
                 let path = normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 let file_type = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_default();
                 match file_type.as_str() {
                     "image" => match read_file_path_reference(&path) {
                         Ok(value) => {
-                            self.assign_output(&step.output_params, "image", Value::String(value));
-                            self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                            self.assign_output(&step.output_params, "image", Value::String(value))?;
+                            self.assign_output(
+                                &step.output_params,
+                                "isSuccess",
+                                Value::Bool(true),
+                            )?;
                             Ok(StepFlow::Continue)
                         }
                         Err(err) => {
@@ -2328,7 +2349,7 @@ impl QuickerRuntime {
                                 &step.output_params,
                                 "isSuccess",
                                 Value::Bool(false),
-                            );
+                            )?;
                             if stop_if_fail {
                                 Err(err)
                             } else {
@@ -2348,12 +2369,12 @@ impl QuickerRuntime {
                     &step.output_params,
                     "width",
                     Value::Number(serde_json::Number::from(width)),
-                );
+                )?;
                 self.assign_output(
                     &step.output_params,
                     "height",
                     Value::Number(serde_json::Number::from(height)),
-                );
+                )?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::ImgToBase64) => {
@@ -2363,25 +2384,25 @@ impl QuickerRuntime {
                     &step.output_params,
                     "code",
                     Value::String(base64_encode(&bytes)),
-                );
+                )?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::FileOperation) => {
                 let op = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_default();
                 match op.as_str() {
                     "deleteFile" => {
                         let path =
                             normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
-                        let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                        let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                         match delete_file_path(&path) {
                             Ok(()) => {
                                 self.assign_output(
                                     &step.output_params,
                                     "isSuccess",
                                     Value::Bool(true),
-                                );
+                                )?;
                                 Ok(StepFlow::Continue)
                             }
                             Err(err) => {
@@ -2389,7 +2410,7 @@ impl QuickerRuntime {
                                     &step.output_params,
                                     "isSuccess",
                                     Value::Bool(false),
-                                );
+                                )?;
                                 if stop_if_fail {
                                     Err(err)
                                 } else {
@@ -2404,35 +2425,36 @@ impl QuickerRuntime {
             Some(runner::StepRunner::SplitString) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let separator = self
-                    .input_string_opt(&step.input_params, "separator")
+                    .input_string_opt(&step.input_params, "separator")?
                     .unwrap_or_default();
-                let separator = if self.input_bool(&step.input_params, "escapeSeparator") {
+                let separator = if self.input_bool(&step.input_params, "escapeSeparator")? {
                     unescape_basic(&separator)
                 } else {
                     separator
                 };
-                let remove_empty = self.input_bool(&step.input_params, "removeEmpty");
+                let remove_empty = self.input_bool(&step.input_params, "removeEmpty")?;
                 let values = input
                     .split(&separator)
                     .filter(|part| !remove_empty || !part.is_empty())
                     .map(|part| Value::String(part.to_string()))
                     .collect::<Vec<_>>();
-                self.assign_output(&step.output_params, "output", Value::Array(values));
+                self.assign_output(&step.output_params, "output", Value::Array(values))?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::Assign) => {
-                let input = self.input_string(&step.input_params, "input")?;
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match self.eval_assign_expression(&input) {
-                    Some(value) => {
-                        self.assign_output(&step.output_params, "output", value);
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
+                match self.input_value(&step.input_params, "input") {
+                    Ok(Some(value)) => {
+                        self.assign_output(&step.output_params, "output", value)?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
-                    None => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                    result => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
-                            Err(format!("Failed to evaluate assign input: {input}"))
+                            Err(result
+                                .err()
+                                .unwrap_or_else(|| "Missing assign input".into()))
                         } else {
                             Ok(StepFlow::Continue)
                         }
@@ -2442,12 +2464,12 @@ impl QuickerRuntime {
             Some(runner::StepRunner::StrReplace) => {
                 let input = self.input_string(&step.input_params, "input")?;
                 let old = self
-                    .input_string_opt(&step.input_params, "old")
+                    .input_string_opt(&step.input_params, "old")?
                     .unwrap_or_default();
                 let new = self
-                    .input_string_opt(&step.input_params, "new")
+                    .input_string_opt(&step.input_params, "new")?
                     .unwrap_or_default();
-                let replace_escapes = self.input_bool(&step.input_params, "replaceEscapes");
+                let replace_escapes = self.input_bool(&step.input_params, "replaceEscapes")?;
                 let old = if replace_escapes {
                     unescape_basic(&old)
                 } else {
@@ -2458,22 +2480,22 @@ impl QuickerRuntime {
                 } else {
                     new
                 };
-                let output = if self.input_bool(&step.input_params, "useRegex") {
+                let output = if self.input_bool(&step.input_params, "useRegex")? {
                     let regex = compile_step_regex(
                         &old,
-                        self.input_bool(&step.input_params, "ignoreCase"),
-                        self.input_bool(&step.input_params, "singleLine"),
-                        self.input_bool(&step.input_params, "multiLine"),
+                        self.input_bool(&step.input_params, "ignoreCase")?,
+                        self.input_bool(&step.input_params, "singleLine")?,
+                        self.input_bool(&step.input_params, "multiLine")?,
                     )?;
                     regex.replace_all(&input, new.as_str()).into_owned()
                 } else {
                     input.replace(&old, &new)
                 };
-                self.assign_output(&step.output_params, "output", Value::String(output));
+                self.assign_output(&step.output_params, "output", Value::String(output))?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::SimpleIf) => {
-                let condition = self.input_value(&step.input_params, "condition");
+                let condition = self.input_value(&step.input_params, "condition")?;
                 let branch = if truthy(condition.as_ref()) {
                     step.if_steps.as_deref().unwrap_or(&[])
                 } else {
@@ -2485,8 +2507,8 @@ impl QuickerRuntime {
                 self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))
             }
             Some(runner::StepRunner::Stop) => {
-                let is_error = self.input_bool(&step.input_params, "isError");
-                let message = self.input_string_opt(&step.input_params, "showMessage");
+                let is_error = self.input_bool(&step.input_params, "isError")?;
+                let message = self.input_string_opt(&step.input_params, "showMessage")?;
                 if is_error {
                     Err(message.unwrap_or_else(|| "Quicker action stopped with an error".into()))
                 } else {
@@ -2495,20 +2517,20 @@ impl QuickerRuntime {
             }
             Some(runner::StepRunner::FormatString) => {
                 let format_string = self
-                    .input_string_opt(&step.input_params, "formatString")
+                    .input_string_opt(&step.input_params, "formatString")?
                     .unwrap_or_default();
                 let mut output = format_string;
                 for idx in 0..=4 {
                     let value = self
-                        .input_string_opt(&step.input_params, &format!("p{idx}"))
+                        .input_string_opt(&step.input_params, &format!("p{idx}"))?
                         .unwrap_or_default();
                     output = output.replace(&format!("{{{idx}}}"), &value);
                 }
-                self.assign_output(&step.output_params, "output", Value::String(output));
+                self.assign_output(&step.output_params, "output", Value::String(output))?;
                 Ok(StepFlow::Continue)
             }
             Some(runner::StepRunner::Notify) => {
-                if let Some(message) = self.input_string_opt(&step.input_params, "msg") {
+                if let Some(message) = self.input_string_opt(&step.input_params, "msg")? {
                     self.last_message = Some(message);
                 }
                 Ok(StepFlow::Continue)
@@ -2517,17 +2539,17 @@ impl QuickerRuntime {
             Some(runner::StepRunner::OutputText) => {
                 let content = self.input_string(&step.input_params, "content")?;
                 let method = self
-                    .input_string_opt(&step.input_params, "method")
+                    .input_string_opt(&step.input_params, "method")?
                     .unwrap_or_else(|| "paste".into());
                 let before = self
-                    .input_string_opt(&step.input_params, "delayBeforePaste")
+                    .input_string_opt(&step.input_params, "delayBeforePaste")?
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
                 let after = self
-                    .input_string_opt(&step.input_params, "delayAfterPaste")
+                    .input_string_opt(&step.input_params, "delayAfterPaste")?
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
-                let append_return = self.input_bool(&step.input_params, "appendReturn");
+                let append_return = self.input_bool(&step.input_params, "appendReturn")?;
 
                 match method.as_str() {
                     "paste" => {
@@ -2551,67 +2573,76 @@ impl QuickerRuntime {
         }
     }
 
-    fn input_value(&self, params: &Map<String, Value>, key: &str) -> Option<Value> {
-        let raw = params.get(key)?;
-        let binding: QuickerValueBinding = serde_json::from_value(raw.clone()).ok()?;
+    fn input_value(&self, params: &Map<String, Value>, key: &str) -> Result<Option<Value>, String> {
+        let Some(raw) = params.get(key) else {
+            return Ok(None);
+        };
+        let binding: QuickerValueBinding = serde_json::from_value(raw.clone())
+            .map_err(|err| format!("Invalid input binding {key}: {err}"))?;
         if let Some(var_key) = binding.var_key.as_deref() {
-            return self.vars.get(var_key).cloned();
+            return self
+                .vars
+                .get(var_key)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| format!("Unknown variable: {var_key}"));
         }
-
-        binding.value.map(|value| match value {
-            Value::String(text) => Value::String(expand_runtime_vars(&text, &self.vars)),
-            other => other,
-        })
+        match binding.value {
+            Some(Value::String(text)) if text.trim_start().starts_with("$=") => {
+                expression::evaluate(&text, &self.vars)
+                    .map(Some)
+                    .map_err(|err| format!("Input {key}: {err}"))
+            }
+            Some(Value::String(text)) => {
+                Ok(Some(Value::String(expand_runtime_vars(&text, &self.vars))))
+            }
+            other => Ok(other),
+        }
     }
 
     fn input_string(&self, params: &Map<String, Value>, key: &str) -> Result<String, String> {
-        self.input_string_opt(params, key)
+        self.input_string_opt(params, key)?
             .ok_or_else(|| format!("Missing input param: {key}"))
     }
 
-    fn input_string_opt(&self, params: &Map<String, Value>, key: &str) -> Option<String> {
-        self.input_value(params, key)
-            .map(|value| value_to_string(&value))
+    fn input_string_opt(
+        &self,
+        params: &Map<String, Value>,
+        key: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .input_value(params, key)?
+            .map(|value| value_to_string(&value)))
     }
 
-    fn input_bool(&self, params: &Map<String, Value>, key: &str) -> bool {
-        truthy(self.input_value(params, key).as_ref())
+    fn input_bool(&self, params: &Map<String, Value>, key: &str) -> Result<bool, String> {
+        Ok(truthy(self.input_value(params, key)?.as_ref()))
     }
 
-    fn assign_output(&mut self, params: &Map<String, Value>, key: &str, value: Value) {
+    fn assign_output(
+        &mut self,
+        params: &Map<String, Value>,
+        key: &str,
+        value: Value,
+    ) -> Result<(), String> {
         let Some(name) = output_var_name(params, key) else {
-            return;
+            return Ok(());
         };
+        let value = expression::convert(value, self.variable_types.get(&name).copied())
+            .map_err(|err| format!("Output {key} to variable {name}: {err}"))?;
         self.vars.insert(name, value);
+        Ok(())
     }
 
-    fn assign_regex_outputs(&mut self, params: &Map<String, Value>, matched: &str) {
+    fn assign_regex_outputs(
+        &mut self,
+        params: &Map<String, Value>,
+        matched: &str,
+    ) -> Result<(), String> {
         for candidate in ["match1", "matches", "output"] {
-            self.assign_output(params, candidate, Value::String(matched.to_string()));
+            self.assign_output(params, candidate, Value::String(matched.to_string()))?;
         }
-    }
-
-    fn eval_assign_expression(&self, input: &str) -> Option<Value> {
-        let trimmed = input.trim();
-        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}\[(\d+)\]$")
-            .ok()
-            .and_then(|regex| regex.captures(trimmed).ok().flatten())
-        {
-            let name = captures.get(1)?.as_str();
-            let index = captures.get(2)?.as_str().parse::<usize>().ok()?;
-            let values = self.vars.get(name)?.as_array()?;
-            return values.get(index).cloned();
-        }
-
-        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}$")
-            .ok()
-            .and_then(|regex| regex.captures(trimmed).ok().flatten())
-        {
-            let name = captures.get(1)?.as_str();
-            return self.vars.get(name).cloned();
-        }
-
-        Some(Value::String(expand_runtime_vars(trimmed, &self.vars)))
+        Ok(())
     }
 }
 
@@ -2662,7 +2693,10 @@ fn execute_quicker_plugin_steps(
         .id
         .clone()
         .unwrap_or_else(|| document.title.clone());
-    let mut runtime = QuickerRuntime::new(&data, state_scope, control.cloned());
+    let mut runtime = match QuickerRuntime::new(&data, state_scope, control.cloned()) {
+        Ok(runtime) => runtime,
+        Err(error) => return ExecResult::Err(error),
+    };
     match runtime.run_steps(&data.steps) {
         Ok(StepFlow::Continue) => match runtime.last_message {
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
@@ -2861,7 +2895,7 @@ fn output_var_name(params: &Map<String, Value>, key: &str) -> Option<String> {
 fn truthy(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_i64().unwrap_or(0) != 0,
+        Some(Value::Number(value)) => value.as_f64().is_some_and(|n| n != 0.0),
         Some(Value::String(value)) => {
             let normalized = value.trim();
             !normalized.is_empty()

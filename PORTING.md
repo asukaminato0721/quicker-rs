@@ -106,6 +106,18 @@ establish completion of the port.
   Native Clippy passed with warnings denied. Wasm check passed with existing warnings.
 - See `tests/compat/README.md` for reproduction steps and limits.
 
+## Step 5: Evaluate plugin expressions and typed variables (2026-10-06)
+
+- Replaced expression-as-text behavior with a pure `$=` evaluator. It supports
+  arithmetic, comparisons, Boolean short circuit, conditional expressions, list
+  and dictionary indexes, and selected string methods. Unsupported syntax fails.
+- Added typed defaults and output conversion for text, numbers, integers,
+  Booleans, lists, and dictionaries. Default expressions use declaration order.
+- Added expression syntax diagnostics to downloaded-action reports. No action
+  runs during inspection. C# host APIs and full language semantics remain unsupported.
+- Tests cover false branches, failed expressions, assignment failure outputs,
+  the downloaded Citavi `IndexOf` condition, UTF-16 positions, and integer precision.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable
