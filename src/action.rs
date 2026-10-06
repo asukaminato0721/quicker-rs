@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::process::{output as run_command_for_output, status as run_command_for_status};
 use fancy_regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -9,7 +11,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -315,13 +317,10 @@ impl ActionExecutionControl {
 
 impl Action {
     pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
-        let quicker_json = match &self.kind {
-            ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json()?,
-            _ => return Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
-        };
-        let document = parse_quicker_action_document(&quicker_json)?;
-        serde_json::to_string_pretty(&document)
-            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
+        match &self.kind {
+            ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json(),
+            _ => Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
+        }
     }
 
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
@@ -348,7 +347,8 @@ impl Action {
             }
         }
 
-        let quicker_json = serde_json::to_string_pretty(&document)
+        let value: Value = parse_json_lenient(input, "Invalid Quicker JSON")?;
+        let quicker_json = serde_json::to_string_pretty(&value)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))?;
 
         Ok(Self {
@@ -363,7 +363,8 @@ impl Action {
         })
     }
 
-    /// Execute this action.
+    /// Execute this action (test convenience; the UI always supplies cancellation).
+    #[cfg(test)]
     pub fn execute(&self) -> ExecResult {
         self.execute_with_control(None)
     }
@@ -1180,8 +1181,9 @@ impl LowCodeKeyMacroStep {
 
 impl PluginPipelineStorage {
     fn to_quicker_json(&self) -> Result<String, String> {
-        let document = parse_quicker_action_document(&self.quicker_json)?;
-        serde_json::to_string_pretty(&document)
+        parse_quicker_action_document(&self.quicker_json)?;
+        let value: Value = parse_json_lenient(&self.quicker_json, "Invalid Quicker JSON")?;
+        serde_json::to_string_pretty(&value)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 }
@@ -2732,9 +2734,9 @@ fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
     while let Some(ch) = chars.next() {
         if ch == '{' {
             let mut name = String::new();
-            let mut probe = chars.clone();
+            let probe = chars.clone();
             let mut found_end = false;
-            while let Some(next) = probe.next() {
+            for next in probe {
                 if next == '}' {
                     found_end = true;
                     break;
@@ -2746,7 +2748,7 @@ fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
                 && !name.chars().all(|ch| ch.is_ascii_digit())
                 && vars.contains_key(&name)
             {
-                for _ in 0..name.len() {
+                for _ in 0..name.chars().count() {
                     chars.next();
                 }
                 chars.next();
@@ -2974,7 +2976,12 @@ fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> E
         cmd.current_dir(dir);
     }
     match cmd.spawn() {
-        Ok(_) => ExecResult::Ok,
+        Ok(mut child) => {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            ExecResult::Ok
+        }
         Err(e) => ExecResult::Err(format!("Failed to run '{}': {}", command, e)),
     }
 }
@@ -2999,6 +3006,23 @@ fn open_target(_target: &str) -> Result<(), String> {
     Err("Opening native targets is unavailable in the web preview".into())
 }
 
+// Keep the selection owner alive after action worker threads exit. On X11,
+// destroying the last clipboard handle also discards copied content.
+#[cfg(not(target_arch = "wasm32"))]
+static CLIPBOARD_OWNER: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mutex::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn with_clipboard_owner(
+    f: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error>,
+) -> Result<(), String> {
+    let mut owner = CLIPBOARD_OWNER.lock().map_err(|err| err.to_string())?;
+    if owner.is_none() {
+        *owner = Some(arboard::Clipboard::new().map_err(|err| err.to_string())?);
+    }
+    f(owner.as_mut().expect("clipboard initialized"))
+        .map_err(|err| format!("Clipboard error: {err}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn write_clipboard_text(text: &str) -> Result<(), String> {
     #[cfg(test)]
@@ -3006,10 +3030,7 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
         return result;
     }
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-    clipboard
-        .set_text(text)
-        .map_err(|e| format!("Clipboard error: {}", e))
+    with_clipboard_owner(|clipboard| clipboard.set_text(text))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3024,10 +3045,7 @@ fn write_clipboard_html(html: &str, alt_text: Option<&str>) -> Result<(), String
         return result;
     }
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-    clipboard
-        .set_html(html, alt_text)
-        .map_err(|e| format!("Clipboard error: {}", e))
+    with_clipboard_owner(|clipboard| clipboard.set_html(html, alt_text))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3056,6 +3074,23 @@ fn read_clipboard_html() -> Result<String, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn read_clipboard_text() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = with_action_test_runtime(|runtime| {
+        if runtime.standard_clipboard_reads.is_empty() && runtime.primary_clipboard_reads.is_empty()
+        {
+            return None;
+        }
+        let standard = runtime.standard_clipboard_reads.pop_front().flatten();
+        let primary = if cfg!(target_os = "linux") {
+            runtime.primary_clipboard_reads.pop_front().flatten()
+        } else {
+            None
+        };
+        Some(normalize_clipboard_text(standard).or_else(|| normalize_clipboard_text(primary))
+            .ok_or_else(|| "No usable text was found in the clipboard. On Linux, select text first or copy it explicitly.".to_string()))
+    }) {
+        return result;
+    }
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
 
     if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
@@ -3148,13 +3183,15 @@ fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Resu
 
     let path = action_state_store_path();
     let mut store = match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str::<ActionStateStore>(&content).unwrap_or_default(),
-        Err(_) => HashMap::new(),
+        Ok(content) => serde_json::from_str::<ActionStateStore>(&content)
+            .map_err(|err| format!("Invalid action state file: {err}"))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(err) => return Err(format!("Cannot read action state file: {err}")),
     };
     store.insert(scope.to_string(), state.clone());
     let content = serde_json::to_string_pretty(&store)
         .map_err(|err| format!("Failed to serialize action state store: {err}"))?;
-    std::fs::write(&path, content)
+    crate::storage::atomic_write(&path, content.as_bytes())
         .map_err(|err| format!("Failed to save action state store: {err}"))
 }
 
@@ -3834,58 +3871,6 @@ fn ensure_not_cancelled(control: Option<&ActionExecutionControl>) -> Result<(), 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wait_for_child_cancelable(
-    child: &mut Child,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<ExitStatus, String> {
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|err| format!("Failed while waiting for {context}: {err}"))?
-        {
-            return Ok(status);
-        }
-
-        if control.is_some_and(ActionExecutionControl::is_cancelled) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(cancellation_error());
-        }
-
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_command_for_status(
-    mut command: Command,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<ExitStatus, String> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("Failed to start {context}: {err}"))?;
-    wait_for_child_cancelable(&mut child, control, context)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_command_for_output(
-    mut command: Command,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<Output, String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("Failed to start {context}: {err}"))?;
-    wait_for_child_cancelable(&mut child, control, context)?;
-    child
-        .wait_with_output()
-        .map_err(|err| format!("Failed to collect {context} output: {err}"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn run_shell_command(
     script: &str,
     shell: &str,
@@ -4003,7 +3988,9 @@ fn windows_send_keys_key_token(key: &str) -> Result<String, String> {
                     };
                     Ok(escape_windows_send_keys_text(&normalized))
                 }
-                _ => Err(format!("Unsupported key on Windows SendKeys backend: {trimmed}")),
+                _ => Err(format!(
+                    "Unsupported key on Windows SendKeys backend: {trimmed}"
+                )),
             }
         }
     }
@@ -4198,11 +4185,11 @@ fn parse_json_lenient<T: DeserializeOwned>(input: &str, context: &str) -> Result
 
 fn sanitize_json_control_chars(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars();
+    let chars = input.chars();
     let mut in_string = false;
     let mut escaped = false;
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if in_string {
             if escaped {
                 output.push(ch);
@@ -4481,6 +4468,36 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display; see scripts/smoke-x11.py"]
+    fn clipboard_persists_after_action_worker_exits() {
+        const TEXT: &str = "Quicker clipboard ownership regression";
+        if std::env::var_os("QUICKER_TEST_CLIPBOARD_READER").is_some() {
+            let mut clipboard = arboard::Clipboard::new().unwrap();
+            assert_eq!(clipboard.get_text().unwrap(), TEXT);
+            return;
+        }
+        thread::spawn(|| write_clipboard_text(TEXT).unwrap())
+            .join()
+            .unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "action::tests::clipboard_persists_after_action_worker_exits",
+            ])
+            .env("QUICKER_TEST_CLIPBOARD_READER", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     fn action(kind: ActionKind) -> Action {
         Action {
             name: "Test".into(),
@@ -4493,12 +4510,30 @@ mod tests {
     }
 
     fn sample(path: &str) -> String {
-        fs::read_to_string(path).unwrap()
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
+    }
+
+    #[test]
+    fn expands_unicode_variable_names_without_consuming_following_text() {
+        let vars = HashMap::from([("名称".into(), Value::String("world".into()))]);
+        assert_eq!(expand_runtime_vars("hello {名称}!", &vars), "hello world!");
+    }
+
+    #[test]
+    fn import_export_preserves_unrecognized_quicker_metadata() {
+        let value = serde_json::json!({
+            "ActionType": 7, "Title": "Extended", "Data": "@CTRL+VK_C",
+            "FutureProperty": {"nested": [1, 2, 3]}, "UnknownFlag": true
+        });
+        let action = Action::from_quicker_plugin_json(&value.to_string()).unwrap();
+        let exported: Value =
+            serde_json::from_str(&action.to_quicker_plugin_json().unwrap()).unwrap();
+        assert_eq!(exported, value);
     }
 
     #[test]
     fn quicker_plugin_document_parses_sample_json() {
-        let sample = sample("sample/统一格式_20260319_095632.json");
+        let sample = sample("tests/fixtures/plain-text.json");
         let document: QuickerActionDocument =
             serde_json::from_str(&sample).expect("sample should match Quicker schema");
         let data = document
@@ -4506,9 +4541,9 @@ mod tests {
             .expect("sample data payload should parse");
 
         assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
-        assert_eq!(document.title, "统一格式");
-        assert_eq!(data.variables.len(), 6);
-        assert_eq!(data.steps.len(), 17);
+        assert_eq!(document.title, "Plain Text");
+        assert_eq!(data.variables.len(), 1);
+        assert_eq!(data.steps.len(), 4);
         assert_eq!(data.steps[0].step_runner_key, "sys:keyInput");
         assert_eq!(data.steps.last().unwrap().step_runner_key, "sys:keyInput");
     }
@@ -4523,7 +4558,7 @@ mod tests {
             hotkey: None,
             kind: ActionKind::PluginPipeline {
                 plugin: PluginPipelineStorage {
-                    quicker_json: sample("sample/统一格式_20260319_095632.json"),
+                    quicker_json: sample("tests/fixtures/plain-text.json"),
                 },
             },
         };
@@ -4538,27 +4573,22 @@ mod tests {
             .expect("exported data payload should parse");
 
         assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
-        assert_eq!(document.title, "统一格式");
-        assert_eq!(document.description, "将粘贴/导入内容的自带样式去除");
+        assert_eq!(document.title, "Plain Text");
+        assert_eq!(document.description, "");
         assert_eq!(document.enable_evaluate_variable, Some(true));
-        assert_eq!(data.variables.len(), 6);
-        assert_eq!(data.steps.len(), 17);
+        assert_eq!(data.variables.len(), 1);
+        assert_eq!(data.steps.len(), 4);
     }
 
     #[test]
     fn quicker_plugin_round_trips_as_native_json() {
-        let sample = sample("sample/统一格式_20260319_095632.json");
+        let sample = sample("tests/fixtures/plain-text.json");
 
         let parsed = Action::from_quicker_plugin_json(&sample).expect("sample should parse");
 
-        assert_eq!(parsed.name, "统一格式");
-        assert_eq!(parsed.description, "将粘贴/导入内容的自带样式去除");
-        assert_eq!(
-            parsed.icon.as_deref(),
-            Some(
-                "https://files.getquicker.net/_icons/2D62F4E62FD40AC3F99CB7ABE05B9E2FAE141A3B.png"
-            )
-        );
+        assert_eq!(parsed.name, "Plain Text");
+        assert_eq!(parsed.description, "");
+        assert_eq!(parsed.icon, None);
         assert_eq!(
             parsed.to_quicker_plugin_json().unwrap(),
             Action::from_quicker_plugin_json(&sample)
@@ -4573,9 +4603,8 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/快捷键_20260319_105627.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/open-url.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4593,7 +4622,7 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.key_results.push_back(Ok(())));
 
-        let action = Action::from_quicker_plugin_json(&sample("sample/定位_20260319_105649.json"))
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/key-macro.json"))
             .expect("sample should parse");
 
         let result = action.execute();
@@ -4609,9 +4638,8 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/ScreenToGif_20260319_095543.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/launch.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4636,9 +4664,8 @@ mod tests {
             runtime.key_results.push_back(Ok(()));
         });
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/图片转公式_20260319_105527.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/html-extract.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4706,9 +4733,8 @@ mod tests {
             runtime.key_results.push_back(Ok(()));
         });
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/公式转图片_20260319_105519.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/formula-image.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4809,10 +4835,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_supported_plugin_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/快捷键_20260319_105627.json",
-        ))
-        .expect("sample should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/open-url.json"))
+                .expect("sample should import");
 
         assert_eq!(draft.title, "快捷键");
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
@@ -4855,10 +4880,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_key_macro_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/定位_20260319_105649.json",
-        ))
-        .expect("key macro should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/key-macro.json"))
+                .expect("key macro should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::KeyMacro);
         assert_eq!(
@@ -4872,10 +4896,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_open_app_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/ScreenToGif_20260319_095543.json",
-        ))
-        .expect("launcher should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/launch.json"))
+                .expect("launcher should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::OpenApp);
         assert_eq!(
@@ -4887,7 +4910,7 @@ mod tests {
     #[test]
     fn low_code_draft_imports_formula_to_image_json() {
         let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/公式转图片_20260319_105519.json",
+            "tests/fixtures/formula-image.json",
         ))
         .expect("formula sample should import");
 

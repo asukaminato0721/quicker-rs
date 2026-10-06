@@ -27,8 +27,7 @@ impl QuickerApp {
                 ui.label(format!("Config folder: {}", config_dir));
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Save Config Now").clicked() {
-                        self.config.save();
+                    if ui.button("Save Config Now").clicked() && self.save_config() {
                         self.show_toast("Config saved.".into(), false);
                     }
 

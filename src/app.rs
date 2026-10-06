@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
 use web_time::{Duration, Instant};
 
+mod basic_editor;
 mod editor;
 mod fonts;
 mod overlay;
@@ -131,6 +132,9 @@ struct ActionEditTarget {
 
 pub struct QuickerApp {
     config: Config,
+    #[cfg(target_os = "linux")]
+    activation: Option<crate::activation::Server>,
+    quitting: bool,
     search: SearchEngine,
     #[cfg(not(target_arch = "wasm32"))]
     _hotkey_manager: Option<GlobalHotKeyManager>,
@@ -149,6 +153,8 @@ pub struct QuickerApp {
     panel_hidden: bool,
     startup_notice: Option<(String, bool)>,
 
+    basic_draft: Option<Action>,
+
     // Plugin editor state
     edit_field1: String, // raw Quicker JSON
     plugin_draft: LowCodePluginDraft,
@@ -164,8 +170,7 @@ pub struct QuickerApp {
 }
 
 impl QuickerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let config = Config::load();
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         install_cjk_font_fallbacks(&cc.egui_ctx);
 
         // Style: make it look clean
@@ -191,6 +196,9 @@ impl QuickerApp {
 
         Self {
             config,
+            #[cfg(target_os = "linux")]
+            activation: None,
+            quitting: false,
             search: SearchEngine::new(),
             #[cfg(not(target_arch = "wasm32"))]
             _hotkey_manager: hotkey_manager,
@@ -208,6 +216,7 @@ impl QuickerApp {
             radial_menu: None,
             panel_hidden: false,
             startup_notice,
+            basic_draft: Some(basic_editor::blank_action()),
             edit_field1: String::new(),
             plugin_draft: LowCodePluginDraft::default(),
             plugin_editor_mode: PluginEditorMode::LowCode,
@@ -219,6 +228,119 @@ impl QuickerApp {
             action_result_rx: None,
             settings_page: SettingsPage::Launcher,
             settings_search: String::new(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_initial_visibility(&mut self, hidden: bool) {
+        self.panel_hidden = hidden;
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_activation(&mut self, server: Option<crate::activation::Server>) {
+        self.activation = server;
+    }
+
+    fn show_panel(&mut self, ctx: &egui::Context) {
+        self.poll_focused_process();
+        self.panel_hidden = false;
+        self.view = View::Panel;
+        self.needs_focus_profile_sync = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+
+    fn hide_panel(&mut self, ctx: &egui::Context) {
+        self.panel_hidden = true;
+        self.radial_menu = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn poll_activation(&mut self, ctx: &egui::Context) {
+        for _ in 0..16 {
+            let request = match self.activation.as_ref().map(|server| server.receive()) {
+                Some(Ok(Some(request))) => request,
+                _ => break,
+            };
+            use crate::activation::Request;
+            match request {
+                Request::Show => self.show_panel(ctx),
+                Request::Hide => self.hide_panel(ctx),
+                Request::Toggle if self.panel_hidden => self.show_panel(ctx),
+                Request::Toggle => self.hide_panel(ctx),
+                Request::Quit => {
+                    self.quitting = true;
+                    if let Some(control) = &self.action_control {
+                        control.cancel();
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+    }
+
+    fn apply_settings(&mut self, ctx: &egui::Context) {
+        if let Err(err) = self.config.validate() {
+            self.show_toast(err, true);
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let new_hotkey = self
+            .config
+            .toggle_hotkey
+            .parse::<HotKey>()
+            .expect("validated hotkey");
+        #[cfg(not(target_arch = "wasm32"))]
+        let rebind = self.toggle_hotkey != Some(new_hotkey);
+        #[cfg(not(target_arch = "wasm32"))]
+        if rebind {
+            if let Some(manager) = &self._hotkey_manager {
+                if let Err(err) = manager.register(new_hotkey) {
+                    self.show_toast(format!("Cannot register shortcut: {err}"), true);
+                    return;
+                }
+            }
+        }
+        if !self.save_config() {
+            #[cfg(not(target_arch = "wasm32"))]
+            if rebind {
+                if let Some(manager) = &self._hotkey_manager {
+                    let _ = manager.unregister(new_hotkey);
+                }
+            }
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if rebind {
+            if let Some(manager) = &self._hotkey_manager {
+                if let Some(previous) = self.toggle_hotkey {
+                    let _ = manager.unregister(previous);
+                }
+                self.toggle_hotkey = Some(new_hotkey);
+            } else {
+                let (manager, hotkey, notice) = init_toggle_hotkey(&self.config.toggle_hotkey);
+                self._hotkey_manager = manager;
+                self.toggle_hotkey = hotkey;
+                self.startup_notice = notice;
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            self.config.panel_width,
+            self.config.panel_height,
+        )));
+        self.needs_focus_profile_sync = true;
+        self.show_toast("Settings applied and saved".into(), false);
+    }
+
+    fn save_config(&mut self) -> bool {
+        match self.config.save() {
+            Ok(()) => true,
+            Err(err) => {
+                self.show_toast(err, true);
+                false
+            }
         }
     }
 
@@ -376,6 +498,7 @@ impl QuickerApp {
     }
 
     fn reset_editor(&mut self) {
+        self.basic_draft = Some(basic_editor::blank_action());
         self.edit_field1.clear();
         self.plugin_draft = LowCodePluginDraft::default();
         self.plugin_editor_mode = PluginEditorMode::LowCode;
@@ -525,12 +648,22 @@ impl QuickerApp {
     }
 
     fn open_plugin_editor_for_entry(&mut self, entry: &ActionListEntry) {
+        self.reset_editor();
+        self.edit_target = Some(ActionEditTarget {
+            profile_idx: entry.profile_idx,
+            path: entry.path.clone(),
+            action_idx: entry.action_idx,
+        });
+        self.view = View::ActionEditor;
         let ActionKind::PluginPipeline { plugin } = &entry.action.kind else {
+            self.basic_draft = Some(entry.action.clone());
             return;
         };
-
-        self.reset_editor();
-        self.edit_field1 = plugin.quicker_json.clone();
+        self.basic_draft = None;
+        self.edit_field1 = entry
+            .action
+            .to_quicker_plugin_json()
+            .unwrap_or_else(|_| plugin.quicker_json.clone());
         match LowCodePluginDraft::from_quicker_plugin_json(&plugin.quicker_json) {
             Ok(draft) => {
                 self.plugin_draft = draft;
@@ -556,21 +689,29 @@ impl QuickerApp {
     }
 
     fn persist_edited_or_new_action(&mut self, action: Action) {
+        if action.name.trim().is_empty() {
+            self.show_toast("Action name is required".into(), true);
+            return;
+        }
+        let previous_config = self.config.clone();
         let message = if let Some(target) = self.edit_target.clone() {
             if !self.replace_action(&target, action) {
                 self.show_toast("Failed to update action.".into(), true);
                 return;
             }
-            self.edit_target = None;
-            "Plugin updated!"
+            "Action updated!"
         } else {
             if let Some(actions) = self.current_actions_mut() {
                 actions.push(action);
             }
-            "Plugin added!"
+            "Action added!"
         };
 
-        self.config.save();
+        if !self.save_config() {
+            self.config = previous_config;
+            return;
+        }
+        self.edit_target = None;
         self.show_toast(message.into(), false);
         self.view = View::Panel;
         self.needs_focus_profile_sync = true;
@@ -666,20 +807,6 @@ impl QuickerApp {
             entries,
         });
         ctx.request_repaint();
-    }
-
-    fn restore_panel_window(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-            egui::viewport::WindowLevel::Normal,
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-            self.config.panel_width,
-            self.config.panel_height,
-        )));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!self.panel_hidden));
     }
 
     fn complete_radial_menu(&mut self, ctx: &egui::Context) {
@@ -786,6 +913,19 @@ impl QuickerApp {
 
 impl eframe::App for QuickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // eframe maps its root window after the first rendered frame even when
+        // the viewport builder requested hidden startup. Reassert on updates.
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.panel_hidden {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        #[cfg(target_os = "linux")]
+        self.poll_activation(ctx);
+        #[cfg(target_os = "linux")]
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_panel(ctx);
+        }
         self.show_startup_notice_once();
         self.handle_global_hotkey(ctx);
         self.poll_action_result();
@@ -802,6 +942,9 @@ impl eframe::App for QuickerApp {
                 self.needs_focus_profile_sync = true;
             } else if self.action_scope.is_some() {
                 self.leave_group();
+            } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.hide_panel(ctx);
             }
         }
 
@@ -914,9 +1057,9 @@ fn paint_radial_ring(
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 244)
         };
         let stroke = if is_hovered {
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(32, 87, 184))
+            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(32, 87, 184))
         } else {
-            egui::Stroke::new(1.0, egui::Color32::from_gray(210))
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(210))
         };
 
         painter.add(egui::Shape::convex_polygon(
@@ -1000,6 +1143,17 @@ fn init_toggle_hotkey(
     Option<HotKey>,
     Option<(String, bool)>,
 ) {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return (
+            None,
+            None,
+            Some((
+                "Wayland: bind quicker-rs --toggle in your desktop shortcut settings".into(),
+                false,
+            )),
+        );
+    }
     let hotkey = match hotkey_text.parse::<HotKey>() {
         Ok(hotkey) => hotkey,
         Err(err) => {

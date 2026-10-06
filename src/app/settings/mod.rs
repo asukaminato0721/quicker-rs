@@ -146,7 +146,7 @@ impl QuickerApp {
                                                 egui::Color32::TRANSPARENT
                                             })
                                             .stroke(egui::Stroke::new(
-                                                1.0,
+                                                1.0_f32,
                                                 if selected {
                                                     egui::Color32::from_rgb(180, 200, 233)
                                                 } else {
@@ -213,7 +213,7 @@ impl QuickerApp {
                                                 egui::Color32::from_rgba_premultiplied(255, 255, 255, 0)
                                             };
                                             let stroke = egui::Stroke::new(
-                                                1.0,
+                                                1.0_f32,
                                                 if selected {
                                                     egui::Color32::from_rgb(180, 199, 230)
                                                 } else {
@@ -261,7 +261,7 @@ impl QuickerApp {
                                 .fill(main_fill)
                                 .corner_radius(egui::CornerRadius::same(12))
                                 .stroke(egui::Stroke::new(
-                                    1.0,
+                                    1.0_f32,
                                     egui::Color32::from_rgb(226, 228, 233),
                                 ))
                                 .inner_margin(egui::Margin::same(16))
@@ -300,7 +300,7 @@ impl QuickerApp {
                                                         .min_size(egui::vec2(28.0, 28.0))
                                                         .fill(egui::Color32::from_rgb(233, 239, 250))
                                                         .stroke(egui::Stroke::new(
-                                                            1.0,
+                                                            1.0_f32,
                                                             egui::Color32::from_rgb(194, 209, 236),
                                                         ))
                                                         .corner_radius(egui::CornerRadius::same(14)),
@@ -372,9 +372,7 @@ impl QuickerApp {
                                                 )
                                                 .clicked()
                                             {
-                                                self.config.save();
-                                                self.show_toast("Config saved.".into(), false);
-                                                self.needs_focus_profile_sync = true;
+                                                self.apply_settings(ui.ctx());
                                             }
 
                                             ui.label(
@@ -405,7 +403,7 @@ pub(super) fn settings_card<R>(
         .fill(egui::Color32::from_rgb(247, 248, 250))
         .corner_radius(egui::CornerRadius::same(12))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgb(227, 229, 234),
         ))
         .inner_margin(egui::Margin::same(14))

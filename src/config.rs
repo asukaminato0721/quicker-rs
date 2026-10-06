@@ -1,7 +1,7 @@
 use crate::action::{Action, ActionKind};
+use crate::focus::FocusedProcess;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::focus::BROWSER_PROCESS_PATTERNS;
-use crate::focus::{browser_family, FocusedProcess};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -61,7 +61,6 @@ impl Config {
         let dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("quicker-rs");
-        std::fs::create_dir_all(&dir).ok();
         dir.join("config.toml")
     }
 
@@ -70,73 +69,54 @@ impl Config {
         PathBuf::from("browser-preview://config.toml")
     }
 
-    /// Load config from disk, or create a default one.
+    /// Load without modifying an existing file, including an invalid one.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load() -> Self {
-        let path = Self::config_path();
-        if path.exists() {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => match toml::from_str(&content) {
-                    Ok(cfg) => {
-                        let (cfg, changed) = Self::migrate_loaded(cfg);
-                        if changed {
-                            cfg.save();
-                        }
-                        tracing::info!("Loaded config from {}", path.display());
-                        return cfg;
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to parse config: {e}");
-                    }
-                },
-                Err(e) => {
-                    tracing::error!("Failed to read config: {e}");
-                }
-            }
-        }
-        let cfg = Self::default();
-        cfg.save();
-        cfg
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn load() -> Self {
-        Self::default()
+    pub fn load() -> Result<Self, String> {
+        Self::load_from(&Self::config_path())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn migrate_loaded(mut cfg: Self) -> (Self, bool) {
-        let mut changed = false;
-
-        if cfg.profiles.is_empty() {
-            return (Self::default(), true);
-        }
-
-        for profile in &mut cfg.profiles {
-            if is_legacy_default_profile(profile) {
-                profile.actions = example_actions();
-                changed = true;
-                continue;
+    pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                let cfg: Self = toml::from_str(&content)
+                    .map_err(|err| format!("Invalid config {}: {err}", path.display()))?;
+                cfg.validate()?;
+                Ok(cfg)
             }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let cfg = Self::default();
+                cfg.save_to(path)?;
+                Ok(cfg)
+            }
+            Err(err) => Err(format!("Cannot read config {}: {err}", path.display())),
+        }
+    }
 
-            for action in pdf_demo_actions() {
-                if !profile
-                    .actions
-                    .iter()
-                    .any(|existing| existing.name == action.name)
-                {
-                    profile.actions.push(action);
-                    changed = true;
-                }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.profiles.is_empty() {
+            return Err("At least one profile is required".into());
+        }
+        if !(1..=12).contains(&self.columns) {
+            return Err("Grid columns must be between 1 and 12".into());
+        }
+        if !self.panel_width.is_finite()
+            || !(300.0..=2400.0).contains(&self.panel_width)
+            || !self.panel_height.is_finite()
+            || !(200.0..=1600.0).contains(&self.panel_height)
+        {
+            return Err("Panel dimensions must be finite: width 300–2400, height 200–1600".into());
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.toggle_hotkey
+            .parse::<global_hotkey::hotkey::HotKey>()
+            .map_err(|err| format!("Invalid toggle hotkey: {err}"))?;
+        for profile in &self.profiles {
+            if profile.name.trim().is_empty() {
+                return Err("Profile names cannot be empty".into());
             }
         }
-
-        if !cfg.profiles.iter().skip(1).any(has_browser_match_process) {
-            cfg.profiles.push(default_browser_profile());
-            changed = true;
-        }
-
-        (cfg, changed)
+        Ok(())
     }
 
     pub fn matching_profile_index(&self, process: &FocusedProcess) -> Option<usize> {
@@ -147,25 +127,23 @@ impl Config {
             .map(|(idx, _)| idx)
     }
 
-    /// Save config to disk.
+    /// Replace the file atomically. Errors are returned to the caller.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn save(&self) {
-        let path = Self::config_path();
-        match toml::to_string_pretty(self) {
-            Ok(content) => {
-                if let Err(e) = std::fs::write(&path, content) {
-                    tracing::error!("Failed to write config: {e}");
-                } else {
-                    tracing::info!("Saved config to {}", path.display());
-                }
-            }
-            Err(e) => tracing::error!("Failed to serialize config: {e}"),
-        }
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::config_path())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to(&self, path: &std::path::Path) -> Result<(), String> {
+        self.validate()?;
+        let content = toml::to_string_pretty(self).map_err(|err| err.to_string())?;
+        crate::storage::atomic_write(path, content.as_bytes())
+            .map_err(|err| format!("Cannot save config {}: {err}", path.display()))
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn save(&self) {
-        let _ = self;
+    pub fn save(&self) -> Result<(), String> {
+        self.validate()
     }
 }
 
@@ -370,7 +348,7 @@ fn example_actions() -> Vec<Action> {
     };
 
     let clipboard = Action {
-        name: "Clipboard History".into(),
+        name: "Copy Greeting".into(),
         description: "Copy a useful snippet".into(),
         icon: Some("📋".into()),
         tags: vec!["clipboard".into(), "copy".into()],
@@ -695,46 +673,51 @@ fn browser_actions() -> Vec<Action> {
     ]
 }
 
-fn has_browser_match_process(profile: &Profile) -> bool {
-    profile
-        .match_processes
-        .iter()
-        .any(|pattern| browser_family(pattern).is_some())
-}
-
-fn is_legacy_default_profile(profile: &Profile) -> bool {
-    const LEGACY_DEFAULT_ACTIONS: [&str; 6] = [
-        "Terminal",
-        "File Manager",
-        "Web Browser",
-        "System Info",
-        "IP Address",
-        "Clipboard History",
-    ];
-
-    profile.name == "Default"
-        && profile.actions.len() == LEGACY_DEFAULT_ACTIONS.len()
-        && profile
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .eq(LEGACY_DEFAULT_ACTIONS)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::focus::FocusedProcess;
 
-    fn action_named(name: &str) -> Action {
-        Action {
-            name: name.into(),
-            description: String::new(),
-            icon: None,
-            tags: vec![],
-            hotkey: None,
-            kind: ActionKind::CopyText { text: name.into() },
-        }
+    #[test]
+    fn invalid_config_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let invalid = "my broken config = [";
+        std::fs::write(&path, invalid).unwrap();
+        assert!(Config::load_from(&path).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), invalid);
+    }
+
+    #[test]
+    fn load_preserves_deleted_defaults_and_custom_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.profiles.truncate(1);
+        cfg.profiles[0].actions.clear();
+        cfg.save_to(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.profiles.len(), 1);
+        assert!(loaded.profiles[0].actions.is_empty());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn invalid_settings_cannot_replace_saved_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/config.toml");
+        let mut cfg = Config::load_from(&path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        cfg.columns = 0;
+        assert!(cfg.save_to(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        cfg.columns = 4;
+        cfg.panel_width = f32::NAN;
+        assert!(cfg.save_to(&path).is_err());
+        cfg.panel_width = 600.0;
+        cfg.profiles.clear();
+        assert!(cfg.save_to(&path).is_err());
     }
 
     fn focused_process(name: &str, path: &str) -> FocusedProcess {
@@ -743,72 +726,6 @@ mod tests {
             process_id: 123,
             process_path: path.into(),
         }
-    }
-
-    #[test]
-    fn migrate_loaded_replaces_legacy_default_profile() {
-        let cfg = Config {
-            toggle_hotkey: "Alt+Space".into(),
-            columns: 4,
-            panel_width: 600.0,
-            panel_height: 500.0,
-            profiles: vec![Profile {
-                name: "Default".into(),
-                description: String::new(),
-                match_processes: vec![],
-                actions: vec![
-                    action_named("Terminal"),
-                    action_named("File Manager"),
-                    action_named("Web Browser"),
-                    action_named("System Info"),
-                    action_named("IP Address"),
-                    action_named("Clipboard History"),
-                ],
-            }],
-        };
-
-        let (migrated, changed) = Config::migrate_loaded(cfg);
-
-        assert!(changed);
-        let names: Vec<_> = migrated.profiles[0]
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert!(names.contains(&"Desktop Tools"));
-        assert!(names.contains(&"Web Shortcuts"));
-        assert!(names.contains(&"Quick Search"));
-    }
-
-    #[test]
-    fn migrate_loaded_appends_missing_pdf_demo_actions_without_duplication() {
-        let cfg = Config {
-            toggle_hotkey: "Alt+Space".into(),
-            columns: 4,
-            panel_width: 600.0,
-            panel_height: 500.0,
-            profiles: vec![Profile {
-                name: "Custom".into(),
-                description: String::new(),
-                match_processes: vec![],
-                actions: vec![pdf_demo_actions()[0].clone()],
-            }],
-        };
-
-        let (migrated, changed) = Config::migrate_loaded(cfg);
-
-        assert!(changed);
-        let names: Vec<_> = migrated.profiles[0]
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert_eq!(
-            names.iter().filter(|name| **name == "Quick Search").count(),
-            1
-        );
-        assert!(names.contains(&"Smart Open Clipboard"));
-        assert!(names.contains(&"Run Clipboard Text"));
     }
 
     #[test]
@@ -830,66 +747,6 @@ mod tests {
         assert_eq!(cfg.profiles.len(), 2);
         assert_eq!(cfg.profiles[1].name, "Browser");
         assert!(cfg.profiles[1].matches_process(&focused_process("Firefox", "/usr/bin/firefox")));
-    }
-
-    #[test]
-    fn migrate_loaded_adds_browser_profile_when_missing() {
-        let cfg = Config {
-            toggle_hotkey: "Alt+Space".into(),
-            columns: 4,
-            panel_width: 600.0,
-            panel_height: 500.0,
-            profiles: vec![Profile {
-                name: "Default".into(),
-                description: String::new(),
-                match_processes: vec![],
-                actions: example_actions(),
-            }],
-        };
-
-        let (migrated, changed) = Config::migrate_loaded(cfg);
-
-        assert!(changed);
-        assert!(migrated
-            .profiles
-            .iter()
-            .any(|profile| profile.name == "Browser"));
-    }
-
-    #[test]
-    fn migrate_loaded_recognizes_legacy_browser_profile_names() {
-        let cfg = Config {
-            toggle_hotkey: "Alt+Space".into(),
-            columns: 4,
-            panel_width: 600.0,
-            panel_height: 500.0,
-            profiles: vec![
-                Profile {
-                    name: "Default".into(),
-                    description: String::new(),
-                    match_processes: vec![],
-                    actions: example_actions(),
-                },
-                Profile {
-                    name: "Browser".into(),
-                    description: String::new(),
-                    match_processes: vec!["brave-browser".into()],
-                    actions: vec![],
-                },
-            ],
-        };
-
-        let (migrated, changed) = Config::migrate_loaded(cfg);
-
-        assert!(changed);
-        assert_eq!(
-            migrated
-                .profiles
-                .iter()
-                .filter(|profile| profile.name == "Browser")
-                .count(),
-            1
-        );
     }
 
     #[test]

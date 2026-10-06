@@ -119,7 +119,8 @@ pub fn normalize_process_name(value: &str) -> Option<String> {
     )
 }
 
-pub fn is_browser_process(process: &FocusedProcess) -> bool {
+#[cfg(test)]
+fn is_browser_process(process: &FocusedProcess) -> bool {
     process
         .aliases()
         .iter()

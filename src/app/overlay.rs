@@ -75,16 +75,12 @@ impl QuickerApp {
         let Some(toggle_hotkey) = self.toggle_hotkey else {
             return;
         };
-
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.id() == toggle_hotkey.id() && event.state() == HotKeyState::Pressed {
-                self.panel_hidden = !self.panel_hidden;
-                self.restore_panel_window(ctx);
-                if !self.panel_hidden {
-                    self.view = View::Panel;
-                    self.needs_focus_profile_sync = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if event.id == toggle_hotkey.id() && event.state == HotKeyState::Pressed {
+                if self.panel_hidden {
+                    self.show_panel(ctx);
+                } else {
+                    self.hide_panel(ctx);
                 }
             }
         }
@@ -166,7 +162,7 @@ impl QuickerApp {
         painter.circle_stroke(
             menu.origin,
             RADIAL_CENTER_RADIUS,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
         );
         painter.text(
             menu.origin,

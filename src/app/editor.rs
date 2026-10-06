@@ -245,7 +245,7 @@ impl QuickerApp {
         let drop_frame = egui::Frame::new()
             .inner_margin(egui::Margin::symmetric(8, 4))
             .stroke(egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 ui.visuals().widgets.inactive.bg_stroke.color,
             ));
 
@@ -774,7 +774,7 @@ impl QuickerApp {
                 let drop_frame = egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(8, 4))
                     .stroke(egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         ui.visuals().widgets.inactive.bg_stroke.color,
                     ));
 
@@ -935,7 +935,7 @@ impl QuickerApp {
                         let drop_frame = egui::Frame::new()
                             .inner_margin(egui::Margin::symmetric(8, 4))
                             .stroke(egui::Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 ui.visuals().widgets.inactive.bg_stroke.color,
                             ));
 
@@ -1086,6 +1086,7 @@ impl QuickerApp {
     }
 
     pub(super) fn render_action_editor(&mut self, ui: &mut egui::Ui) {
+        let save_shortcut = ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S));
         ui.horizontal(|ui| {
             if ui.button("← Cancel").clicked() {
                 self.edit_target = None;
@@ -1093,9 +1094,9 @@ impl QuickerApp {
                 self.needs_focus_profile_sync = true;
             }
             ui.heading(if self.edit_target.is_some() {
-                "Edit Plugin"
+                "Edit Action"
             } else {
-                "Add Plugin"
+                "Add Action"
             });
         });
         ui.separator();
@@ -1118,15 +1119,43 @@ impl QuickerApp {
                 );
                 ui.add_space(8.0);
 
-                self.render_plugin_json_editor(ui);
+                if self.edit_target.is_none() {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(self.basic_draft.is_some(), "Basic action")
+                            .clicked()
+                        {
+                            self.basic_draft
+                                .get_or_insert_with(super::basic_editor::blank_action);
+                        }
+                        if ui
+                            .selectable_label(
+                                self.basic_draft.is_none(),
+                                "Automation / Quicker plugin",
+                            )
+                            .clicked()
+                        {
+                            self.basic_draft = None;
+                        }
+                    });
+                }
+                if self.basic_draft.is_some() {
+                    self.render_basic_editor(ui);
+                } else {
+                    self.render_plugin_json_editor(ui);
+                }
 
                 ui.add_space(16.0);
 
-                if ui.button("✓ Save Plugin").clicked() {
-                    let action_result = match self.plugin_editor_mode {
-                        PluginEditorMode::LowCode => self.plugin_draft.to_action(),
-                        PluginEditorMode::RawJson { .. } => {
-                            Action::from_quicker_plugin_json(&self.edit_field1)
+                if ui.button("✓ Save Action (Ctrl+S)").clicked() || save_shortcut {
+                    let action_result = if let Some(action) = &self.basic_draft {
+                        Ok(action.clone())
+                    } else {
+                        match self.plugin_editor_mode {
+                            PluginEditorMode::LowCode => self.plugin_draft.to_action(),
+                            PluginEditorMode::RawJson { .. } => {
+                                Action::from_quicker_plugin_json(&self.edit_field1)
+                            }
                         }
                     };
                     let action = match action_result {
