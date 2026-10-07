@@ -626,3 +626,46 @@ has script, form, list-management, selection, Windows-path, and expression gaps.
 
 The checker accepts these four built-in tools. It still rejects unknown tools
 and static custom settings. Native Wayland input tools remain unverified.
+
+## List editor evidence
+
+The MSI ManageListStep.Execute entry is at RVA `0x2f2e20`. Its worker closure
+at `0x4126d4` reads the bound list, opens the window, and waits for the result.
+It writes the edited items only after confirmation. The window returns original
+item text through `GetResult` at `0x1e0780`. Reset uses `0x1e0df8`. The plain
+add and edit prompts require nonempty text. Their methods are at `0x1e0fb0`
+and `0x1e0b78`. Insertion at `0x1e1494` puts the new item after the selection,
+or at the end when no item is selected.
+
+The Linux implementation uses a native egui viewport and an editable list copy.
+Done writes the bound variable. Cancel, title-bar closure, and action cancellation
+discard changes. `stopIfFail` defaults to false. Action cancellation always stops
+the workflow. Unit tests check transactions, resource limits, duplicate identity,
+multiple selection, insertion position, and unsupported options.
+
+```sh
+cargo build --locked
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  dbus-run-session -- python3 scripts/smoke-list-windows-x11.py
+```
+
+The test needs KWin, Xvfb, xdotool, xprop, D-Bus, and ImageMagick. It uses isolated
+settings. It checks add/edit, duplicate rows, Ctrl/Shift selection, drag ordering,
+ascending/descending sorting, reset, permissions, and cancellation. It closes
+a window during an unfinished edit and checks that the original list is retained.
+It also cancels the action during an edit and verifies that execution stops.
+
+With a corpus directory, the test verifies the pinned OpenCC hash and executes
+both original `sys:manageList` steps without changing their JSON. Their paths are
+`/Steps/0/IfSteps/2/IfSteps/0` and `/Steps/5/IfSteps/0/IfSteps/1/IfSteps/0`.
+One confirmation replaces the list; one cancellation preserves the original.
+The full OpenCC report now has eight unsupported runners: five script steps,
+two forms, and one selection window. Two Windows paths and two complex
+expressions also remain blockers. This test does not execute the complete action.
+
+The list editor currently supports plain text. Menu-data parsing, display
+expressions, Markdown help, and custom add/edit subprograms remain unsupported.
+The checker rejects active unsupported options. It warns that sorting uses
+UTF-16 ordinal order instead of Windows culture order, and that lists use value
+copies instead of shared .NET objects. Native Wayland remains unverified.

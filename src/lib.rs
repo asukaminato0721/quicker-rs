@@ -9,6 +9,8 @@ mod focus;
 #[cfg(target_os = "linux")]
 mod input_windows;
 #[cfg(not(target_arch = "wasm32"))]
+mod list_windows;
+#[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod search;
 #[cfg(not(target_arch = "wasm32"))]

@@ -171,6 +171,20 @@ differ from Windows. File metadata sorting requires native regular files and
 available timestamps. Lists do not share .NET reference identity. These modules
 retain JSON editor cards to preserve all bindings.
 
+`sys:manageList` opens a native list editor for a bound text-list variable.
+It supports add, edit, multiple selection, delete, drag reordering, sorting,
+and reset. Done writes the edited list. Cancel or window closure retains the
+original list. Cancellation reports `isSuccess=false` and obeys `stopIfFail`,
+which defaults to false. Action cancellation always stops execution.
+The editor preserves duplicate items, Unicode, and trailing spaces. New or
+edited items require nonempty text. Existing empty items remain valid.
+The list limit is 100,000 items and 16 MiB of text. Up to 32 windows can open.
+Widths are clamped to at least 200 and must not exceed 4096 logical pixels.
+Sorting uses UTF-16 ordinal order and can differ from Windows locale sorting.
+Menu-data parsing, display expressions, Markdown help, and custom add/edit
+subprograms remain unsupported. The checker reports these options.
+List values do not share .NET reference identity. Native Wayland remains unverified.
+
 `sys:readFile` reads text as UTF-8 by default. `sys:WriteTextFile` creates parent
 directories and supports overwrite, append, BOMs, and newline conversion.
 Both modules support UTF-8, UTF-16, UTF-32, and ASCII. Unicode BOMs override the
@@ -352,8 +366,9 @@ External subprograms load from `$XDG_CONFIG_HOME/quicker-rs/subprograms`, or
 reads `global/GUID.json`, containing the exported subprogram and matching `Id`.
 The runtime does not download missing files. The checker reports missing dependencies
 and inspects resolved bodies without executing them. Server templates remain unsupported.
-List and dictionary inputs currently use value copies. Shared mutable object behavior
-still needs implementation before modules that mutate these objects are supported.
+List and dictionary inputs currently use value copies. A list edit changes its
+bound variable, but does not change aliases or an input in a caller's scope.
+Shared mutable object behavior still needs implementation.
 
 Download and inspect shared dependencies with the action:
 

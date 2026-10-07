@@ -323,6 +323,73 @@ fn visit(
 }
 
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:manageList" {
+        issue(
+            issues,
+            path,
+            "list_editor_requires_native_application",
+            "warning",
+        );
+        issue(
+            issues,
+            path,
+            "list_sort_uses_utf16_ordinal_order",
+            "warning",
+        );
+        issue(
+            issues,
+            path,
+            "list_values_do_not_share_dotnet_reference_identity",
+            "warning",
+        );
+        if !step["InputParams"]["list"]["VarKey"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            issue(issues, path, "list_editor_requires_variable", "blocker");
+        }
+        for key in manage_list::OPTIONS {
+            let flag = match *key {
+                "addSubprogram" => Some("allowAdd"),
+                "editSubprogram" => Some("allowEdit"),
+                _ => None,
+            };
+            if flag.is_some_and(|flag| {
+                let b = &step["InputParams"][flag];
+                b["VarKey"].is_null()
+                    && !b["Value"].is_null()
+                    && !b["Value"]
+                        .as_str()
+                        .is_some_and(|s| s.contains('{') || s.trim_start().starts_with("$="))
+                    && !truthy(Some(&b["Value"]))
+            }) {
+                continue;
+            }
+            let binding = &step["InputParams"][key];
+            let option_path = format!("{path}/InputParams/{key}");
+            if binding["VarKey"].is_string()
+                || binding["Value"]
+                    .as_str()
+                    .is_some_and(|s| s.trim_start().starts_with("$=") || s.contains('{'))
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "dynamic_option_requires_validation",
+                    "warning",
+                );
+            } else if !binding["Value"].is_null()
+                && !manage_list::validate_option(key, &binding["Value"])
+            {
+                issue(
+                    issues,
+                    &option_path,
+                    "unsupported_list_editor_option",
+                    "blocker",
+                );
+            }
+        }
+    }
     if runner == "sys:delay" {
         let binding = &step["InputParams"]["delayMs"];
         let option_path = format!("{path}/InputParams/delayMs");

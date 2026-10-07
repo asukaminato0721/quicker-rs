@@ -529,6 +529,30 @@ establish completion of the port.
   unverified. Other text tools, custom replacement modes, forms, and advanced
   input window options still need implementation.
 
+## Step 24: Native list editing (2026-10-07)
+
+- Kept automatic downloader work, selection windows, and complex C# execution
+  deferred. Used the existing OpenCC download for compatibility checks.
+- Inspected the MSI list worker, result conversion, reset, delete, add/edit
+  prompts, insertion, and sorting. Added `sys:manageList` for bound text lists.
+  The native window edits a copy. Done writes the variable; cancellation and
+  window closure preserve the original. Action cancellation always stops.
+- Added add/edit/delete, Ctrl/Shift multiple selection, drag ordering, sorting,
+  reset, and operation permissions. Preserved duplicates, Unicode, and spaces.
+  Added limits and explicit errors for unsupported advanced options. The checker
+  reports those options and differences in sorting and shared object identity.
+- The X11 test exposed a missed fast Ctrl+A shortcut and incorrect test button
+  coordinates. Fixed shortcut event handling and corrected the coordinates.
+  Tests cover editing, ordering, reset, permissions, window closure during an
+  edit, and action cancellation. Both original OpenCC list steps pass without
+  changing their JSON. The full workflow retains eight unsupported runners,
+  two Windows paths, and two complex expressions.
+- Validation: 188 native tests and seven corpus tests passed. Clippy passed
+  with warnings denied. Wasm compiled with 123 preview dead-code warnings.
+  Added the list-window smoke test to CI. Remote CI and native Wayland remain
+  unverified. Menu-data parsing, display expressions, Markdown help, custom
+  add/edit subprograms, and shared list reference semantics remain incomplete.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

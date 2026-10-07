@@ -69,7 +69,7 @@ fn strings(value: Value) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
-fn check_size(items: &[String]) -> Result<(), String> {
+pub(super) fn check_size(items: &[String]) -> Result<(), String> {
     if items.len() > MAX_ITEMS || items.iter().map(String::len).sum::<usize>() > MAX_BYTES {
         return Err("List exceeds 100000 items or 16 MiB of text".into());
     }
