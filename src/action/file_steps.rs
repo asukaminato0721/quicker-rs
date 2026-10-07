@@ -7,7 +7,7 @@ mod tests;
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
-enum Encoding {
+pub(super) enum Encoding {
     Utf8,
     Utf16(bool), // Big endian when true.
     Utf32(bool),
@@ -15,7 +15,7 @@ enum Encoding {
 }
 
 impl Encoding {
-    fn parse(name: &str) -> Result<Self, String> {
+    pub(super) fn parse(name: &str) -> Result<Self, String> {
         match name.to_ascii_lowercase().as_str() {
             "" | "utf-8" | "utf8" => Ok(Self::Utf8),
             "utf-16" | "unicode" | "utf-16le" => Ok(Self::Utf16(false)),
@@ -27,7 +27,7 @@ impl Encoding {
         }
     }
 
-    fn preamble(self, utf8_bom: bool) -> &'static [u8] {
+    pub(super) fn preamble(self, utf8_bom: bool) -> &'static [u8] {
         match self {
             Self::Utf8 if utf8_bom => b"\xef\xbb\xbf",
             Self::Utf16(false) => b"\xff\xfe",
@@ -38,7 +38,7 @@ impl Encoding {
         }
     }
 
-    fn encode(self, text: &str) -> Result<Vec<u8>, String> {
+    pub(super) fn encode(self, text: &str) -> Result<Vec<u8>, String> {
         let mut bytes = Vec::new();
         match self {
             Self::Utf8 => bytes.extend_from_slice(text.as_bytes()),

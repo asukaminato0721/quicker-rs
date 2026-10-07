@@ -724,3 +724,97 @@ atomic field writes. Both runtime and checker reject unsupported field controls
 and advanced settings. Date controls, groups, computed fields, custom buttons,
 Markdown help, and shared dictionary reference semantics remain incomplete.
 Native Wayland and remote CI remain unverified.
+
+## Native script interpreters
+
+`sys:runScript` supports `CUSTOM` with an explicit Linux interpreter and `PS`
+with `pwsh` on PATH. This does not translate CMD, BAT, or AutoHotKey source.
+Those types remain blockers in the checker and return an error at runtime.
+
+MSI methods in Quicker.exe establish the behavior:
+
+| Method | RVA | Behavior |
+| --- | --- | --- |
+| RunScriptStep.Execute | `0x2f0d1c` | Calls the common action wrapper. |
+| Script worker | `0x41013c` | Selects encoding and requests capture for bound outputs. |
+| ScriptRunner.Execute | `0x118ad8` | Separates CMD commands from file scripts. |
+| ScriptRunner file execution | `0x119430` | Replaces `%FILE%`, appends script parameters, and selects the interpreter. |
+| ScriptRunner process execution | `0x118de8` | Captures both streams, waits, and returns the process result. |
+| ScriptRunner.GetWorkingDir | `0x119aec` | Resolves explicit, foreground Explorer, or desktop directories. |
+
+Example input parameters for a Linux shell script:
+
+```json
+{
+  "type": {"Value": "CUSTOM"},
+  "runner": {"Value": "/bin/sh"},
+  "ext": {"Value": ".sh"},
+  "encoding": {"Value": "UTF8-NOBOM"},
+  "script": {"Value": "printf 'Hello Linux\\n'"},
+  "argTemplate": {"Value": "\"%FILE%\""},
+  "waitToExit": {"Value": true}
+}
+```
+
+Bind `stdout`, `stdoutOnly`, or `stderr` in `OutputParams` to capture output.
+Any of these bindings forces a wait. `stdout` returns stderr when stdout is
+empty. `stopIfFail` defaults to true. Process creation and option errors obey
+that setting. A nonzero exit code alone does not fail the step. Cancellation
+always stops the action, even when `stopIfFail` is false. Failure leaves the
+previous captured-output variables unchanged.
+
+The runtime parses arguments with the existing Windows CRT quoting rules.
+Shell operators in arguments have no special meaning. It replaces `%FILE%`
+after parsing so that paths with spaces remain one argument. `scriptParams`
+are appended for both CUSTOM and PS, as in the inspected MSI. PS ignores custom
+runner, extension, and argument-template settings. Script variable bindings
+pass source text directly. Literal script values use normal Quicker variable
+interpolation.
+
+Temporary scripts use a private directory. Waiting execution removes that
+directory after the process exits or cancellation kills its process group.
+Detached execution returns after process creation and keeps the directory until
+the direct child exits. Later action cancellation does not stop a detached
+process. Child processes that outlive their interpreter must not depend on its
+temporary script. Application termination can leave temporary files behind.
+
+Platform differences and limits:
+
+- `default` encoding means UTF-8 without a BOM on Linux. `utf-8` writes a BOM.
+  `UTF8-NOBOM`, UTF-16 LE/BE, UTF-32 LE/BE, and ASCII are supported. ASCII rejects
+  unrepresentable characters. UTF-7 and Windows code pages are unsupported.
+- Both `oem` and `utf8` decode output as UTF-8. Invalid bytes use replacement
+  characters. Native line endings and trailing whitespace remain unchanged.
+  The MSI uses line-based collection instead. Each stream has a 1 MiB capture
+  limit with a truncation marker. Script source and encoded content have a
+  16 MiB limit.
+- An empty working directory uses the desktop directory, or the home directory
+  when the desktop directory is absent. Foreground file-manager directories
+  are not detected. An explicit missing directory returns an error.
+- Execution has no console input or terminal window. Unbound output is discarded.
+  `runAsAdmin` and file associations are unsupported. CUSTOM requires a runner.
+  PS requires an installed native PowerShell. The module does not install it.
+- A custom extension requires a dot followed by 1 to 31 ASCII letters, digits,
+  or underscores. The interpreter receives the file even when the template
+  places the path inside a larger argument.
+
+Native tests execute shell scripts to check waiting, detached lifetime, output
+fallback, nonzero exits, literal parameters, cancellation, and cleanup. Encoding
+tests inspect the file bytes received by a native runner. A separate opt-in test
+runs PowerShell:
+
+```sh
+cargo test --locked powershell_script_uses_native_interpreter_and_script_parameters -- --ignored
+```
+
+This test passed locally with the official PowerShell 7.6.6 Linux x64 archive.
+Its SHA-256 matched the release's `hashes.sha256`:
+`ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc`.
+It verifies Unicode parameters, UTF-8 BOM, separate stderr, and a nonzero exit.
+PowerShell is not bundled with this project. Remote CI has not run this test.
+
+The opt-in `downloaded_opencc_cmd_scripts_remain_explicit_windows_blockers` test
+checks all five original OpenCC script steps without changing their JSON.
+Each returns a Windows-interpreter error. The checker keeps all five as script
+type blockers. The full action also retains one unsupported selection runner,
+two Windows paths, and two complex expressions. The action cannot yet run in full.

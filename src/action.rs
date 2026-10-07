@@ -17,6 +17,7 @@ mod run_steps;
 mod runner;
 #[cfg(test)]
 mod runtime_tests;
+mod script_steps;
 mod show_text;
 mod string_process;
 mod subprogram;
@@ -2138,6 +2139,7 @@ impl QuickerRuntime {
             Some(runner::StepRunner::GetSelectedFiles) => self.run_selected_files(step),
             Some(runner::StepRunner::KeyOperation) => self.run_key_operation(step),
             Some(runner::StepRunner::Run) => self.run_program_step(step),
+            Some(runner::StepRunner::RunScript) => self.run_script_step(step),
             Some(runner::StepRunner::OpenUrl) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 open_target(&url)

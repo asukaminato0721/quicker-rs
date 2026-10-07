@@ -580,7 +580,31 @@ establish completion of the port.
   remain incomplete. Automatic downloader work, selection windows, and complex
   C# execution remain deferred.
 
-## Next implementation priorities (goal remains active)
+## Step 26: Native plugin scripts (2026-10-07)
+
+- Inspected the MSI script worker, interpreter selection, process execution,
+  and working-directory resolution. Added `sys:runScript` for `CUSTOM` with
+  an explicit Linux interpreter and `PS` with PowerShell `pwsh` on PATH.
+- Added temporary script files, file encodings, argument templates, script
+  parameters, working directories, output capture, waiting, and detached
+  execution. A detached process keeps its script until the direct child exits.
+  Cancellation terminates the process group for a waiting or captured script.
+- Output bindings force a wait. `stdout` falls back to stderr when stdout is
+  empty. A nonzero exit code alone does not fail the step, as in the MSI.
+  The checker reports Windows script types and unsupported options explicitly.
+- Validation: 202 native tests and eight corpus tests passed. Clippy passed
+  with warnings denied. Wasm compiled with 133 preview dead-code warnings.
+  A separate test with official PowerShell 7.6.6 passed. It covers a Unicode
+  argument, UTF-8 BOM, stderr, output capture, and a nonzero exit code.
+- The original OpenCC action still has five Windows-script blockers, one
+  unsupported selection runner, two Windows paths, and two complex expressions.
+  This step does not make that full action executable. Console windows, console
+  input, foreground file-manager directories, Windows encodings, file
+  associations, and administrator execution remain incomplete. See the script
+  section in `tests/compat/README.md` for exact platform differences.
+- Pause after this step, as requested. The Linux port remains incomplete.
+
+## Next implementation priorities (resume after the requested pause)
 
 The user emphasized plugin support. Prioritize compatibility and executable
 plugin workflows over additional launcher conveniences.

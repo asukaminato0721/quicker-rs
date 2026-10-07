@@ -109,9 +109,15 @@ pub fn output(
     output_with_pid(command, control, context).map(|(_, output)| output)
 }
 
-pub fn detached(
+pub fn detached(command: Command, control: Option<&ActionExecutionControl>) -> Result<u32, String> {
+    detached_with_resource(command, control, ())
+}
+
+/// Keep script files and other owned resources until the direct child exits.
+pub fn detached_with_resource(
     mut command: Command,
     control: Option<&ActionExecutionControl>,
+    resource: impl Send + 'static,
 ) -> Result<u32, String> {
     if control.is_some_and(ActionExecutionControl::is_cancelled) {
         return Err("Action cancelled".into());
@@ -124,6 +130,7 @@ pub fn detached(
     let pid = child.id();
     thread::spawn(move || {
         let _ = child.wait();
+        drop(resource);
     });
     Ok(pid)
 }

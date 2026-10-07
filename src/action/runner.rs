@@ -3,6 +3,7 @@
 pub(super) enum StepRunner {
     OpenUrl,
     Run,
+    RunScript,
     StateStorage,
     MsgBox,
     SelectFolder,
@@ -54,6 +55,7 @@ impl StepRunner {
         Some(match key {
             "sys:openUrl" => Self::OpenUrl,
             "sys:run" => Self::Run,
+            "sys:runScript" => Self::RunScript,
             "sys:stateStorage" => Self::StateStorage,
             "sys:MsgBox" => Self::MsgBox,
             "sys:selectFolder" => Self::SelectFolder,

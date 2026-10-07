@@ -322,6 +322,105 @@ fn visit(
     }
 }
 
+fn check_script(step: &Value, path: &str, issues: &mut Vec<Value>) {
+    issue(
+        issues,
+        path,
+        "script_requires_native_linux_interpreter",
+        "warning",
+    );
+    issue(
+        issues,
+        path,
+        "script_uses_utf8_output_and_native_line_endings",
+        "warning",
+    );
+    let dynamic = |key: &str| {
+        let binding = &step["InputParams"][key];
+        binding["VarKey"].as_str().is_some_and(|s| !s.is_empty())
+            || binding["Value"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("$=") || s.contains('{'))
+    };
+    let mode = step["InputParams"]["type"]["Value"]
+        .as_str()
+        .unwrap_or("CMD_K");
+    for (key, default) in [
+        ("type", "CMD_K"),
+        ("encoding", "default"),
+        ("outputEncoding", "oem"),
+        ("ext", ""),
+        ("runner", ""),
+        ("argTemplate", "%FILE%"),
+        ("scriptParams", ""),
+        ("workingDir", ""),
+        ("runAsAdmin", "false"),
+    ] {
+        if matches!(key, "ext" | "runner" | "argTemplate")
+            && (dynamic("type") || !mode.eq_ignore_ascii_case("CUSTOM"))
+        {
+            continue;
+        }
+        let option_path = format!("{path}/InputParams/{key}");
+        if dynamic(key) {
+            issue(
+                issues,
+                &option_path,
+                "dynamic_option_requires_validation",
+                "warning",
+            );
+            continue;
+        }
+        let value = &step["InputParams"][key]["Value"];
+        let text = value.as_str().unwrap_or(default);
+        let supported = if key == "runAsAdmin" {
+            !truthy(Some(value))
+        } else {
+            script_steps::validate_option(key, text)
+        };
+        if !supported {
+            issue(
+                issues,
+                &option_path,
+                if key == "type" {
+                    "script_type_requires_linux_replacement"
+                } else {
+                    "unsupported_script_option"
+                },
+                "blocker",
+            );
+        }
+        if key == "workingDir" && text.is_empty() {
+            issue(
+                issues,
+                &option_path,
+                "script_defaults_to_desktop_or_home_directory",
+                "warning",
+            );
+        }
+        if key == "encoding" && matches!(text.to_ascii_lowercase().as_str(), "" | "default") {
+            issue(
+                issues,
+                &option_path,
+                "script_default_encoding_is_utf8_without_bom",
+                "warning",
+            );
+        }
+    }
+    if !["stdout", "stdoutOnly", "stderr"].iter().any(|key| {
+        step["OutputParams"][key]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    }) {
+        issue(
+            issues,
+            path,
+            "script_runs_without_terminal_or_console_input",
+            "warning",
+        );
+    }
+}
+
 fn check_form(step: &Value, path: &str, issues: &mut Vec<Value>) {
     issue(
         issues,
@@ -429,6 +528,9 @@ fn check_form(step: &Value, path: &str, issues: &mut Vec<Value>) {
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
     if runner == "sys:form" {
         check_form(step, path, issues);
+    }
+    if runner == "sys:runScript" {
+        check_script(step, path, issues);
     }
     if runner == "sys:manageList" {
         issue(
