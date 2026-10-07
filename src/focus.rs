@@ -10,6 +10,7 @@ pub struct FocusedProcess {
     pub app_name: String,
     pub process_id: u32,
     pub process_path: String,
+    pub window_id: String,
 }
 
 impl FocusedProcess {
@@ -119,7 +120,8 @@ pub fn normalize_process_name(value: &str) -> Option<String> {
     )
 }
 
-pub fn is_browser_process(process: &FocusedProcess) -> bool {
+#[cfg(test)]
+fn is_browser_process(process: &FocusedProcess) -> bool {
     process
         .aliases()
         .iter()
@@ -160,9 +162,14 @@ fn match_browser_token(token: &str) -> Option<&'static str> {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub fn detect_focused_process() -> Option<FocusedProcess> {
+    #[cfg(target_os = "linux")]
+    if !crate::x11::is_wayland() {
+        return crate::x11::focused_process();
+    }
     let active_window = active_win_pos_rs::get_active_window().ok()?;
 
     Some(FocusedProcess {
+        window_id: active_window.window_id,
         app_name: active_window.app_name,
         process_id: u32::try_from(active_window.process_id).ok()?,
         process_path: active_window.process_path.to_string_lossy().to_string(),
@@ -180,6 +187,7 @@ mod tests {
 
     fn process(app_name: &str, process_id: u32, process_path: &str) -> FocusedProcess {
         FocusedProcess {
+            window_id: "123".into(),
             app_name: app_name.into(),
             process_id,
             process_path: process_path.into(),

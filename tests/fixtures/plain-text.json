@@ -1,0 +1,8 @@
+{
+  "ActionType": 24,
+  "Title": "Plain Text",
+  "Description": "",
+  "Icon": null,
+  "EnableEvaluateVariable": true,
+  "Data": "{\"Variables\": [{\"Key\": \"text\", \"Type\": 0, \"DefaultValue\": \"\", \"SaveState\": false}], \"Steps\": [{\"StepRunnerKey\": \"sys:keyInput\", \"InputParams\": {\"keys\": {\"VarKey\": null, \"Value\": \"{\\\"CtrlKeys\\\": [162], \\\"Keys\\\": [67]}\"}}, \"OutputParams\": {}, \"Disabled\": false, \"DelayMs\": 0}, {\"StepRunnerKey\": \"sys:getClipboardText\", \"InputParams\": {\"format\": {\"VarKey\": null, \"Value\": \"UnicodeText\"}, \"stopIfFail\": {\"VarKey\": null, \"Value\": \"1\"}}, \"OutputParams\": {\"output\": \"text\"}, \"Disabled\": false, \"DelayMs\": 0}, {\"StepRunnerKey\": \"sys:writeClipboard\", \"InputParams\": {\"type\": {\"VarKey\": null, \"Value\": \"text\"}, \"text\": {\"VarKey\": \"text\", \"Value\": null}}, \"OutputParams\": {}, \"Disabled\": false, \"DelayMs\": 0}, {\"StepRunnerKey\": \"sys:keyInput\", \"InputParams\": {\"keys\": {\"VarKey\": null, \"Value\": \"{\\\"CtrlKeys\\\": [162], \\\"Keys\\\": [86]}\"}}, \"OutputParams\": {}, \"Disabled\": false, \"DelayMs\": 0}]}"
+}

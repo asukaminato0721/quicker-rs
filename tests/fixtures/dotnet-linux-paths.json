@@ -1,0 +1,941 @@
+{
+  "runtime": ".NET 8.0.0",
+  "cases": [
+    {
+      "expression": "$= Path.GetDirectoryName(null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetFileName(null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetExtension(null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetPathRoot(null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.HasExtension(null)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(null)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(null, null)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.ChangeExtension(null, \u0022\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.ChangeExtension(null, \u0022txt\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.ChangeExtension(null, \u0022.tar.gz\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\u0022, null)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\u0022, \u0022\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\u0022, \u0022txt\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\u0022, \u0022.tar.gz\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022/\u0022)",
+      "expected": null
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022/\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022/\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022/\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/\u0022, null)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/\u0022, \u0022\u0022)",
+      "expected": "/."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/\u0022, \u0022txt\u0022)",
+      "expected": "/.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/\u0022, \u0022.tar.gz\u0022)",
+      "expected": "/.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022//\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022//\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022//\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022//\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022//\u0022, null)",
+      "expected": "//"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022//\u0022, \u0022\u0022)",
+      "expected": "//."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022//\u0022, \u0022txt\u0022)",
+      "expected": "//.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022//\u0022, \u0022.tar.gz\u0022)",
+      "expected": "//.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022///\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022///\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022///\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022///\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022///\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022///\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022///\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022///\u0022, null)",
+      "expected": "///"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022///\u0022, \u0022\u0022)",
+      "expected": "///."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022///\u0022, \u0022txt\u0022)",
+      "expected": "///.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022///\u0022, \u0022.tar.gz\u0022)",
+      "expected": "///.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\u0022, null)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\u0022, \u0022\u0022)",
+      "expected": "a."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\u0022, \u0022txt\u0022)",
+      "expected": "a.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a/\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a/\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a/\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a/\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/\u0022, null)",
+      "expected": "a/"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/\u0022, \u0022\u0022)",
+      "expected": "a/."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/\u0022, \u0022txt\u0022)",
+      "expected": "a/.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a/.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a//\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a//\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a//\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a//\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a//\u0022, null)",
+      "expected": "a//"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a//\u0022, \u0022\u0022)",
+      "expected": "a//."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a//\u0022, \u0022txt\u0022)",
+      "expected": "a//.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a//\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a//.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a/b\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a/b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a/b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a/b\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a/b\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a/b\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a/b\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/b\u0022, null)",
+      "expected": "a/b"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/b\u0022, \u0022\u0022)",
+      "expected": "a/b."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/b\u0022, \u0022txt\u0022)",
+      "expected": "a/b.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/b\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a/b.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": "/tmp"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": "\u4E2D\u6587.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": "\u4E2D\u6587.tar"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": ".gz"
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022, null)",
+      "expected": "/tmp/\u4E2D\u6587.tar"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022, \u0022\u0022)",
+      "expected": "/tmp/\u4E2D\u6587.tar."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022, \u0022txt\u0022)",
+      "expected": "/tmp/\u4E2D\u6587.tar.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/\\u4E2D\\u6587.tar.gz\u0022, \u0022.tar.gz\u0022)",
+      "expected": "/tmp/\u4E2D\u6587.tar.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022/tmp/.config\u0022)",
+      "expected": "/tmp"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022/tmp/.config\u0022)",
+      "expected": ".config"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022/tmp/.config\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022/tmp/.config\u0022)",
+      "expected": ".config"
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022/tmp/.config\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022/tmp/.config\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022/tmp/.config\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/.config\u0022, null)",
+      "expected": "/tmp/"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/.config\u0022, \u0022\u0022)",
+      "expected": "/tmp/."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/.config\u0022, \u0022txt\u0022)",
+      "expected": "/tmp/.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp/.config\u0022, \u0022.tar.gz\u0022)",
+      "expected": "/tmp/.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022file.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022file.\u0022)",
+      "expected": "file."
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022file.\u0022)",
+      "expected": "file"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022file.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022file.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022file.\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022file.\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022file.\u0022, null)",
+      "expected": "file"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022file.\u0022, \u0022\u0022)",
+      "expected": "file."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022file.\u0022, \u0022txt\u0022)",
+      "expected": "file.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022file.\u0022, \u0022.tar.gz\u0022)",
+      "expected": "file.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022..\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022..\u0022)",
+      "expected": ".."
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022..\u0022)",
+      "expected": "."
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022..\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022..\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022..\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022..\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022..\u0022, null)",
+      "expected": "."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022..\u0022, \u0022\u0022)",
+      "expected": ".."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022..\u0022, \u0022txt\u0022)",
+      "expected": "..txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022..\u0022, \u0022.tar.gz\u0022)",
+      "expected": "..tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022.\u0022)",
+      "expected": "."
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022.\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022.\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022.\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022.\u0022, null)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022.\u0022, \u0022\u0022)",
+      "expected": "."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022.\u0022, \u0022txt\u0022)",
+      "expected": ".txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022.\u0022, \u0022.tar.gz\u0022)",
+      "expected": ".tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a/../b\u0022)",
+      "expected": "a/.."
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a/../b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a/../b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a/../b\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a/../b\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a/../b\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a/../b\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/../b\u0022, null)",
+      "expected": "a/../b"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/../b\u0022, \u0022\u0022)",
+      "expected": "a/../b."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/../b\u0022, \u0022txt\u0022)",
+      "expected": "a/../b.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a/../b\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a/../b.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022./file\u0022)",
+      "expected": "."
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022./file\u0022)",
+      "expected": "file"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022./file\u0022)",
+      "expected": "file"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022./file\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022./file\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022./file\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022./file\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022./file\u0022, null)",
+      "expected": "./file"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022./file\u0022, \u0022\u0022)",
+      "expected": "./file."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022./file\u0022, \u0022txt\u0022)",
+      "expected": "./file.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022./file\u0022, \u0022.tar.gz\u0022)",
+      "expected": "./file.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022 a / file.txt \u0022)",
+      "expected": " a "
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022 a / file.txt \u0022)",
+      "expected": " file.txt "
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022 a / file.txt \u0022)",
+      "expected": " file"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022 a / file.txt \u0022)",
+      "expected": ".txt "
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022 a / file.txt \u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022 a / file.txt \u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022 a / file.txt \u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022 a / file.txt \u0022, null)",
+      "expected": " a / file"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022 a / file.txt \u0022, \u0022\u0022)",
+      "expected": " a / file."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022 a / file.txt \u0022, \u0022txt\u0022)",
+      "expected": " a / file.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022 a / file.txt \u0022, \u0022.tar.gz\u0022)",
+      "expected": " a / file.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022a\\nb.txt\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022a\\nb.txt\u0022)",
+      "expected": "a\nb.txt"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022a\\nb.txt\u0022)",
+      "expected": "a\nb"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022a\\nb.txt\u0022)",
+      "expected": ".txt"
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022a\\nb.txt\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022a\\nb.txt\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022a\\nb.txt\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\\nb.txt\u0022, null)",
+      "expected": "a\nb"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\\nb.txt\u0022, \u0022\u0022)",
+      "expected": "a\nb."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\\nb.txt\u0022, \u0022txt\u0022)",
+      "expected": "a\nb.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022a\\nb.txt\u0022, \u0022.tar.gz\u0022)",
+      "expected": "a\nb.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022/tmp//a///b\u0022)",
+      "expected": "/tmp/a"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022/tmp//a///b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022/tmp//a///b\u0022)",
+      "expected": "b"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022/tmp//a///b\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022/tmp//a///b\u0022)",
+      "expected": "/"
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022/tmp//a///b\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022/tmp//a///b\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp//a///b\u0022, null)",
+      "expected": "/tmp//a///b"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp//a///b\u0022, \u0022\u0022)",
+      "expected": "/tmp//a///b."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp//a///b\u0022, \u0022txt\u0022)",
+      "expected": "/tmp//a///b.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022/tmp//a///b\u0022, \u0022.tar.gz\u0022)",
+      "expected": "/tmp//a///b.tar.gz"
+    },
+    {
+      "expression": "$= Path.GetDirectoryName(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": "\uD83D\uDE00"
+    },
+    {
+      "expression": "$= Path.GetFileName(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": "\u4E2D\u6587.txt"
+    },
+    {
+      "expression": "$= Path.GetFileNameWithoutExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": "\u4E2D\u6587"
+    },
+    {
+      "expression": "$= Path.GetExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": ".txt"
+    },
+    {
+      "expression": "$= Path.GetPathRoot(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.HasExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": true
+    },
+    {
+      "expression": "$= Path.IsPathRooted(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022)",
+      "expected": false
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022, null)",
+      "expected": "\uD83D\uDE00/\u4E2D\u6587"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022, \u0022\u0022)",
+      "expected": "\uD83D\uDE00/\u4E2D\u6587."
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022, \u0022txt\u0022)",
+      "expected": "\uD83D\uDE00/\u4E2D\u6587.txt"
+    },
+    {
+      "expression": "$= Path.ChangeExtension(\u0022\\uD83D\\uDE00/\\u4E2D\\u6587.txt\u0022, \u0022.tar.gz\u0022)",
+      "expected": "\uD83D\uDE00/\u4E2D\u6587.tar.gz"
+    },
+    {
+      "expression": "$= Path.Combine()",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.Combine(\u0022a\u0022)",
+      "expected": "a"
+    },
+    {
+      "expression": "$= Path.Combine(\u0022a\u0022, \u0022b\u0022)",
+      "expected": "a/b"
+    },
+    {
+      "expression": "$= Path.Combine(\u0022a\u0022, \u0022/b\u0022, \u0022c\u0022)",
+      "expected": "/b/c"
+    },
+    {
+      "expression": "$= Path.Combine(\u0022/tmp//\u0022, \u0022file\u0022)",
+      "expected": "/tmp//file"
+    },
+    {
+      "expression": "$= Path.Combine(\u0022a\u0022, \u0022../b\u0022)",
+      "expected": "a/../b"
+    },
+    {
+      "expression": "$= Path.Combine(\u0022\u0022, \u0022\u0022)",
+      "expected": ""
+    },
+    {
+      "expression": "$= Path.Combine(\u0022a\u0022, \u0022\u0022, \u0022b\u0022, \u0022c\u0022, \u0022d\u0022)",
+      "expected": "a/b/c/d"
+    },
+    {
+      "expression": "$= @\u0022\\\u0022",
+      "expected": "\\"
+    },
+    {
+      "expression": "$= @\u0022a\u0022\u0022b{missing}\u0022",
+      "expected": "a\u0022b{missing}"
+    },
+    {
+      "expression": "$= @\u0022a\r\n\u4E2D\u0022",
+      "expected": "a\r\n\u4E2D"
+    },
+    {
+      "expression": "$= \u0022\\x12345\u0022",
+      "expected": "\u12345"
+    },
+    {
+      "expression": "$= \u0022\\U0001F600\u0022",
+      "expected": "\uD83D\uDE00"
+    },
+    {
+      "expression": "$= \u0022\\ud83d\\ude00\u0022",
+      "expected": "\uD83D\uDE00"
+    }
+  ]
+}

@@ -49,7 +49,7 @@ impl QuickerApp {
                             clicked_action = Some(entry.clone());
                         }
 
-                        if matches!(entry.action.kind, ActionKind::PluginPipeline { .. }) {
+                        {
                             ui.horizontal(|ui| {
                                 if ui.small_button("Edit").clicked() {
                                     edit_action = Some(entry.clone());
@@ -69,8 +69,9 @@ impl QuickerApp {
 
         if let Some(target) = delete_action {
             if self.delete_action(&target) {
-                self.config.save();
-                self.show_toast("Plugin deleted!".into(), false);
+                if self.save_config() {
+                    self.show_toast("Action deleted!".into(), false);
+                }
                 self.needs_focus_profile_sync = true;
             } else {
                 self.show_toast("Failed to delete plugin.".into(), true);
@@ -94,6 +95,7 @@ impl QuickerApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_action_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -156,10 +158,18 @@ impl QuickerApp {
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if ui.small_button("Quit").clicked() {
+                    self.quitting = true;
+                    if let Some(control) = &self.action_control {
+                        control.cancel();
+                    }
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 if ui.button("⚙").on_hover_text("Settings").clicked() {
                     self.view = View::Settings;
                 }
-                if ui.button("＋").on_hover_text("Add plugin").clicked() {
+                if ui.button("＋").on_hover_text("Add action").clicked() {
                     self.reset_editor();
                     self.view = View::ActionEditor;
                 }

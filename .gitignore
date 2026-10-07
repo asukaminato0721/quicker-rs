@@ -1,2 +1,6 @@
 /target
 /dist
+/.compat
+__pycache__/
+/scripts/dotnet-path-oracle/bin/
+/scripts/dotnet-path-oracle/obj/

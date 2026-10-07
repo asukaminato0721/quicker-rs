@@ -1,0 +1,7 @@
+{
+  "ActionType": 24,
+  "Title": "快捷键",
+  "Description": "",
+  "Icon": null,
+  "Data": "{\"Variables\": [], \"Steps\": [{\"StepRunnerKey\": \"sys:openUrl\", \"InputParams\": {\"url\": {\"VarKey\": null, \"Value\": \"https://www.yuque.com/supermemo/wiki/keyboard-shortcuts\"}}, \"OutputParams\": {}, \"Disabled\": false, \"DelayMs\": 0}]}"
+}

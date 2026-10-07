@@ -9,7 +9,7 @@ impl QuickerApp {
         settings_card(
             ui,
             "Launcher Shortcut",
-            "The global shortcut opens the main panel. Changes are saved immediately but may require a restart to rebind on every desktop session.",
+            "Apply Settings saves and rebinds the X11 shortcut. On Wayland, bind quicker-rs --toggle in your desktop shortcut settings.",
             |ui| {
                 ui.label("Toggle Hotkey");
                 ui.add(

@@ -1,3 +1,32 @@
+mod clipboard_steps;
+pub(crate) mod compatibility;
+mod control_flow;
+mod dialogs;
+mod expression;
+mod file_dialogs;
+mod file_selection;
+mod file_steps;
+pub(crate) mod forms;
+pub(crate) mod input_tools;
+mod key_steps;
+mod list_steps;
+pub(crate) mod manage_list;
+mod preservation;
+mod regex_steps;
+mod run_steps;
+mod runner;
+#[cfg(test)]
+mod runtime_tests;
+mod script_steps;
+mod show_text;
+mod string_process;
+mod subprogram;
+mod text_steps;
+mod wait_window;
+mod window_steps;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::process::{output as run_command_for_output, status as run_command_for_status};
 use fancy_regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -9,7 +38,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +111,7 @@ pub struct PluginPipelineStorage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LowCodePluginDraft {
+    source: Option<preservation::SourceDocument>,
     pub kind: LowCodePluginKind,
     pub title: String,
     pub description: String,
@@ -96,6 +126,7 @@ pub struct LowCodePluginDraft {
 impl Default for LowCodePluginDraft {
     fn default() -> Self {
         Self {
+            source: None,
             kind: LowCodePluginKind::PluginFlow,
             title: String::new(),
             description: String::new(),
@@ -125,6 +156,15 @@ pub enum LowCodeKeyMacroStep {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LowCodePluginStep {
+    Preserved {
+        source: Value,
+        baseline: Value,
+        step: Box<LowCodePluginStep>,
+    },
+    Raw {
+        json: String,
+        reason: String,
+    },
     OpenUrl {
         url: String,
     },
@@ -256,7 +296,33 @@ pub enum LowCodeWriteClipboardKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LowCodeStringProcessMethod {
     ToLower,
+    ToUpper,
+    Trim,
+    TrimStart,
+    TrimEnd,
     UrlEncode,
+}
+
+impl LowCodeStringProcessMethod {
+    pub const ALL: [Self; 6] = [
+        Self::ToLower,
+        Self::ToUpper,
+        Self::Trim,
+        Self::TrimStart,
+        Self::TrimEnd,
+        Self::UrlEncode,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ToLower => "toLower",
+            Self::ToUpper => "toUpper",
+            Self::Trim => "trim",
+            Self::TrimStart => "trimStart",
+            Self::TrimEnd => "trimEnd",
+            Self::UrlEncode => "urlEncode",
+        }
+    }
 }
 
 fn default_shell() -> String {
@@ -297,6 +363,7 @@ pub enum ExecResult {
 #[derive(Debug, Clone, Default)]
 pub struct ActionExecutionControl {
     cancelled: Arc<AtomicBool>,
+    dialog_active: Arc<AtomicBool>,
 }
 
 impl ActionExecutionControl {
@@ -308,20 +375,36 @@ impl ActionExecutionControl {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    pub(crate) fn dialog_active(&self) -> bool {
+        self.dialog_active.load(Ordering::SeqCst)
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 }
 
 impl Action {
-    pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
-        let quicker_json = match &self.kind {
-            ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json()?,
-            _ => return Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
+    /// Whether this action sends keyboard events to an external application.
+    #[cfg(target_os = "linux")]
+    pub fn needs_input_target(&self) -> bool {
+        let ActionKind::PluginPipeline { plugin } = &self.kind else {
+            return false;
         };
-        let document = parse_quicker_action_document(&quicker_json)?;
-        serde_json::to_string_pretty(&document)
-            .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
+        let Ok(document) = parse_quicker_action_document(&plugin.quicker_json) else {
+            return false;
+        };
+        document.action_type == QUICKER_KEYS_ACTION_TYPE
+            || document
+                .data_payload()
+                .is_ok_and(|data| subprogram::needs_input_target(&data, &[], 0))
+    }
+
+    pub fn to_quicker_plugin_json(&self) -> Result<String, String> {
+        match &self.kind {
+            ActionKind::PluginPipeline { plugin } => plugin.to_quicker_json(),
+            _ => Err("Only plugin pipeline actions can be exported as Quicker JSON".into()),
+        }
     }
 
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
@@ -336,19 +419,20 @@ impl Action {
             QUICKER_OPEN_ACTION_TYPE => {
                 document.launch_payload()?;
             }
-            QUICKER_PLUGIN_ACTION_TYPE => {
+            QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => {
                 if !document.use_template.unwrap_or(false) && document.has_data() {
                     document.data_payload()?;
                 }
             }
             action_type => {
                 return Err(format!(
-                    "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+                    "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
                 ));
             }
         }
 
-        let quicker_json = serde_json::to_string_pretty(&document)
+        let value: Value = parse_json_lenient(input, "Invalid Quicker JSON")?;
+        let quicker_json = serde_json::to_string_pretty(&value)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))?;
 
         Ok(Self {
@@ -363,7 +447,8 @@ impl Action {
         })
     }
 
-    /// Execute this action.
+    /// Execute this action (test convenience; the UI always supplies cancellation).
+    #[cfg(test)]
     pub fn execute(&self) -> ExecResult {
         self.execute_with_control(None)
     }
@@ -492,11 +577,20 @@ impl Action {
 impl LowCodePluginDraft {
     pub fn from_quicker_plugin_json(input: &str) -> Result<Self, String> {
         let document = parse_quicker_action_document(input)?;
+        let mut draft = Self::from_document(document)?;
+        draft.source = Some(preservation::SourceDocument {
+            original: parse_json_lenient(input, "Invalid Quicker JSON")?,
+            baseline: draft.generated_document()?,
+        });
+        Ok(draft)
+    }
 
+    fn from_document(document: QuickerActionDocument) -> Result<Self, String> {
         match document.action_type {
             QUICKER_KEYS_ACTION_TYPE => {
                 let key_macro_steps = parse_quicker_key_macro_script(document.data_text())?;
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::KeyMacro,
                     title: document.title,
                     description: document.description,
@@ -511,6 +605,7 @@ impl LowCodePluginDraft {
             QUICKER_OPEN_ACTION_TYPE => {
                 let launch = document.launch_payload()?;
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::OpenApp,
                     title: document.title,
                     description: document.description,
@@ -522,7 +617,7 @@ impl LowCodePluginDraft {
                     steps: Vec::new(),
                 })
             }
-            QUICKER_PLUGIN_ACTION_TYPE => {
+            QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => {
                 if document.use_template.unwrap_or(false) && !document.has_data() {
                     return Err(
                         "Template-based Quicker actions cannot be opened in the low-code editor because the template body is not embedded"
@@ -530,14 +625,13 @@ impl LowCodePluginDraft {
                     );
                 }
 
-                let data = document.data_payload()?;
-                let steps = data
-                    .steps
-                    .iter()
-                    .map(low_code_step_from_document)
+                let data: Value = parse_json_lenient(document.data_text(), "Invalid workflow data")?;
+                let steps = data.get("Steps").and_then(Value::as_array).into_iter().flatten()
+                    .map(preservation::import_step)
                     .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Self {
+                    source: None,
                     kind: LowCodePluginKind::PluginFlow,
                     title: document.title,
                     description: document.description,
@@ -550,12 +644,21 @@ impl LowCodePluginDraft {
                 })
             }
             action_type => Err(format!(
-                "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+                "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
             )),
         }
     }
 
     pub fn to_quicker_json(&self) -> Result<String, String> {
+        let generated = self.generated_document()?;
+        let document = match &self.source {
+            Some(source) => preservation::merge_document(source, generated)?,
+            None => generated,
+        };
+        serde_json::to_string_pretty(&document).map_err(|err| err.to_string())
+    }
+
+    fn generated_document(&self) -> Result<Value, String> {
         let document = match self.kind {
             LowCodePluginKind::KeyMacro => QuickerActionDocument {
                 row: Some(0),
@@ -646,26 +749,28 @@ impl LowCodePluginDraft {
                 let steps = self
                     .steps
                     .iter()
-                    .map(|step| step.to_step_document(&mut variable_names))
+                    .map(|step| step.to_step_value(&mut variable_names))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let variables = variable_names
+                let variables: Vec<_> = variable_names
                     .into_iter()
                     .map(|name| QuickerPluginVariable {
                         key: name,
                         value_type: Some(0),
                         default_value: Some(String::new()),
                         save_state: Some(false),
+                        is_input: false,
+                        is_output: false,
                     })
                     .collect();
 
-                let data = QuickerPluginData {
-                    limit_single_instance: false,
-                    summary_expression: Some(String::new()),
-                    sub_programs: Vec::new(),
-                    variables,
-                    steps,
-                };
+                let data = serde_json::json!({
+                    "LimitSingleInstance": false,
+                    "SummaryExpression": "",
+                    "SubPrograms": [],
+                    "Variables": variables,
+                    "Steps": steps,
+                });
 
                 QuickerActionDocument {
                     row: Some(0),
@@ -729,7 +834,7 @@ impl LowCodePluginDraft {
             }
         };
 
-        serde_json::to_string_pretty(&document)
+        serde_json::to_value(&document)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 
@@ -749,8 +854,24 @@ impl LowCodePluginDraft {
 }
 
 impl LowCodePluginStep {
+    pub fn editable(&self) -> &Self {
+        match self {
+            Self::Preserved { step, .. } => step.editable(),
+            _ => self,
+        }
+    }
+
+    pub fn editable_mut(&mut self) -> &mut Self {
+        match self {
+            Self::Preserved { step, .. } => step.editable_mut(),
+            _ => self,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Preserved { step, .. } => step.label(),
+            Self::Raw { .. } => "Custom Step (JSON)",
             Self::OpenUrl { .. } => "Open URL",
             Self::Delay { .. } => "Delay",
             Self::SimpleIf { .. } => "If",
@@ -778,11 +899,25 @@ impl LowCodePluginStep {
         }
     }
 
-    fn to_step_document(
-        &self,
-        variable_names: &mut BTreeSet<String>,
-    ) -> Result<QuickerPluginStepDocument, String> {
-        match self {
+    fn to_step_value(&self, variable_names: &mut BTreeSet<String>) -> Result<Value, String> {
+        let document: Result<QuickerPluginStepDocument, String> = match self {
+            Self::Preserved {
+                source,
+                baseline,
+                step,
+            } => {
+                return Ok(preservation::apply_changes(
+                    source,
+                    baseline,
+                    &step.to_step_value(variable_names)?,
+                ));
+            }
+            Self::Raw { json, .. } => {
+                let value: Value = parse_json_lenient(json, "Invalid custom step JSON")?;
+                serde_json::from_value::<QuickerPluginStepDocument>(value.clone())
+                    .map_err(|err| format!("Invalid custom step: {err}"))?;
+                return Ok(value);
+            }
             Self::OpenUrl { url } => Ok(step_document(
                 "sys:openUrl",
                 map_with_binding([("url", url.as_str())]),
@@ -793,28 +928,12 @@ impl LowCodePluginStep {
                 map_with_binding([("delayMs", &delay_ms.to_string())]),
                 Map::new(),
             )),
-            Self::SimpleIf {
-                condition,
-                if_steps,
-                else_steps,
-            } => Ok(QuickerPluginStepDocument {
-                step_runner_key: "sys:simpleIf".into(),
+            Self::SimpleIf { condition, .. } => Ok(QuickerPluginStepDocument {
+                step_runner_key: "sys:if".into(),
                 input_params: map_with_binding([("condition", condition.as_str())]),
                 output_params: Map::new(),
-                if_steps: Some(
-                    if_steps
-                        .iter()
-                        .map(|step| step.to_step_document(variable_names))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                else_steps: (!else_steps.is_empty())
-                    .then(|| {
-                        else_steps
-                            .iter()
-                            .map(|step| step.to_step_document(variable_names))
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()?,
+                if_steps: None,
+                else_steps: None,
                 note: None,
                 disabled: false,
                 collapsed: false,
@@ -1061,16 +1180,7 @@ impl LowCodePluginStep {
                 track_variable_name(variable_names, output);
                 Ok(step_document(
                     "sys:stringProcess",
-                    map_with_binding([
-                        ("data", input.as_str()),
-                        (
-                            "method",
-                            match method {
-                                LowCodeStringProcessMethod::ToLower => "toLower",
-                                LowCodeStringProcessMethod::UrlEncode => "urlEncode",
-                            },
-                        ),
-                    ]),
+                    map_with_binding([("data", input.as_str()), ("method", method.key())]),
                     map_with_output([("output", output.as_str()), ("isSuccess", "")]),
                 ))
             }
@@ -1164,7 +1274,28 @@ impl LowCodePluginStep {
                 );
                 Ok(step_document("sys:outputText", input_params, Map::new()))
             }
+        };
+        let mut value = serde_json::to_value(document?).map_err(|err| err.to_string())?;
+        if let Self::SimpleIf {
+            if_steps,
+            else_steps,
+            ..
+        } = self
+        {
+            value["IfSteps"] = Value::Array(
+                if_steps
+                    .iter()
+                    .map(|step| step.to_step_value(variable_names))
+                    .collect::<Result<_, _>>()?,
+            );
+            value["ElseSteps"] = Value::Array(
+                else_steps
+                    .iter()
+                    .map(|step| step.to_step_value(variable_names))
+                    .collect::<Result<_, _>>()?,
+            );
         }
+        Ok(value)
     }
 }
 
@@ -1180,8 +1311,9 @@ impl LowCodeKeyMacroStep {
 
 impl PluginPipelineStorage {
     fn to_quicker_json(&self) -> Result<String, String> {
-        let document = parse_quicker_action_document(&self.quicker_json)?;
-        serde_json::to_string_pretty(&document)
+        parse_quicker_action_document(&self.quicker_json)?;
+        let value: Value = parse_json_lenient(&self.quicker_json, "Invalid Quicker JSON")?;
+        serde_json::to_string_pretty(&value)
             .map_err(|err| format!("Failed to serialize Quicker plugin JSON: {err}"))
     }
 }
@@ -1189,6 +1321,7 @@ impl PluginPipelineStorage {
 const QUICKER_KEYS_ACTION_TYPE: u32 = 7;
 const QUICKER_OPEN_ACTION_TYPE: u32 = 11;
 const QUICKER_PLUGIN_ACTION_TYPE: u32 = 24;
+const QUICKER_SUBPROGRAM_ACTION_TYPE: u32 = 25;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
@@ -1311,6 +1444,10 @@ struct QuickerPluginVariable {
     default_value: Option<String>,
     #[serde(default)]
     save_state: Option<bool>,
+    #[serde(default)]
+    is_input: bool,
+    #[serde(default)]
+    is_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1508,22 +1645,10 @@ fn low_code_step_from_document(
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(0),
         }),
-        "sys:simpleIf" => Ok(LowCodePluginStep::SimpleIf {
+        "sys:simpleIf" | "sys:if" => Ok(LowCodePluginStep::SimpleIf {
             condition: binding_string(&step.input_params, "condition").unwrap_or_default(),
-            if_steps: step
-                .if_steps
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(low_code_step_from_document)
-                .collect::<Result<Vec<_>, _>>()?,
-            else_steps: step
-                .else_steps
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(low_code_step_from_document)
-                .collect::<Result<Vec<_>, _>>()?,
+            if_steps: Vec::new(),
+            else_steps: Vec::new(),
         }),
         "sys:stateStorage" => match binding_string(&step.input_params, "type").as_deref() {
             Some("readActionState") => Ok(LowCodePluginStep::StateStorageRead {
@@ -1543,6 +1668,10 @@ fn low_code_step_from_document(
                 other
             )),
         },
+        "sys:MsgBox" if binding_string(&step.input_params, "operation").is_some_and(|v| !matches!(v.as_str(), "" | "default"))
+            || binding_string(&step.input_params, "buttons").is_some_and(|v| v != "OK")
+            || ["result", "okOrYes"].iter().any(|key| output_var_name(&step.output_params, key).is_some()) =>
+            Err("Message buttons and outputs require the JSON editor".into()),
         "sys:MsgBox" => Ok(LowCodePluginStep::MsgBox {
             title: binding_string(&step.input_params, "title").unwrap_or_default(),
             message: binding_string(&step.input_params, "message").unwrap_or_default(),
@@ -1551,6 +1680,8 @@ fn low_code_step_from_document(
             prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
             output: output_var_name(&step.output_params, "path").unwrap_or_default(),
         }),
+        "sys:userInput" if binding_string(&step.input_params, "type").is_some_and(|v| !matches!(v.as_str(), "text" | "multiline")) =>
+            Err("This input type requires the JSON editor".into()),
         "sys:userInput" => Ok(LowCodePluginStep::UserInput {
             prompt: binding_string(&step.input_params, "prompt").unwrap_or_default(),
             default_value: binding_string(&step.input_params, "defaultValue").unwrap_or_default(),
@@ -1637,22 +1768,35 @@ fn low_code_step_from_document(
                 .unwrap_or_default(),
             alt_text: binding_string(&step.input_params, "text").unwrap_or_default(),
         }),
-        "sys:regexExtract" => Ok(LowCodePluginStep::RegexExtract {
-            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-            pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
-            output: output_var_name(&step.output_params, "match1")
-                .or_else(|| output_var_name(&step.output_params, "output"))
-                .or_else(|| output_var_name(&step.output_params, "matches"))
-                .unwrap_or_default(),
-        }),
-        "sys:stringProcess" => Ok(LowCodePluginStep::StringProcess {
-            input: binding_string(&step.input_params, "data").unwrap_or_default(),
-            method: match binding_string(&step.input_params, "method").as_deref() {
-                Some("urlEncode") => LowCodeStringProcessMethod::UrlEncode,
-                _ => LowCodeStringProcessMethod::ToLower,
-            },
-            output: output_var_name(&step.output_params, "output").unwrap_or_default(),
-        }),
+        "sys:regexExtract" => {
+            let mode = binding_string(&step.input_params, "getGroup").unwrap_or_else(|| "0".into());
+            let other_outputs = [
+                "matches", "match2", "match3", "match4", "match5", "matchObj", "matchesCollection",
+            ];
+            if !matches!(mode.as_str(), "0" | "false")
+                || other_outputs.iter().any(|key| output_var_name(&step.output_params, key).is_some())
+            {
+                return Err("Edit regex groups and multiple outputs in the JSON editor".into());
+            }
+            Ok(LowCodePluginStep::RegexExtract {
+                input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                pattern: binding_string(&step.input_params, "pattern").unwrap_or_default(),
+                output: output_var_name(&step.output_params, "match1")
+                    .or_else(|| output_var_name(&step.output_params, "output"))
+                    .unwrap_or_default(),
+            })
+        }
+        "sys:stringProcess" => {
+            let selected = binding_string(&step.input_params, "method").unwrap_or_default();
+            let method = LowCodeStringProcessMethod::ALL.into_iter()
+                .find(|m| m.key().eq_ignore_ascii_case(&selected))
+                .ok_or("This text operation requires the JSON editor")?;
+            Ok(LowCodePluginStep::StringProcess {
+                input: binding_string(&step.input_params, "data").unwrap_or_default(),
+                method,
+                output: output_var_name(&step.output_params, "output").unwrap_or_default(),
+            })
+        }
         "sys:splitString" => Ok(LowCodePluginStep::SplitString {
             input: binding_string(&step.input_params, "data").unwrap_or_default(),
             separator: binding_string(&step.input_params, "separator").unwrap_or_default(),
@@ -1892,15 +2036,28 @@ fn serialize_quicker_key_macro_steps(steps: &[LowCodeKeyMacroStep]) -> Result<St
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StepFlow {
     Continue,
+    BreakLoop,
+    NextIteration,
     Stop(Option<String>),
+    StopAction(Option<String>),
 }
 
 struct QuickerRuntime {
     vars: HashMap<String, Value>,
+    variable_types: HashMap<String, u8>,
     last_message: Option<String>,
     state_scope: String,
+    action_title: String,
     action_state: HashMap<String, String>,
     control: Option<ActionExecutionControl>,
+    clipboard_before_copy: Option<u64>,
+    subprogram_scopes: Vec<Vec<Value>>,
+    call_depth: usize,
+    dependency_dir: Option<std::path::PathBuf>,
+    #[cfg(not(target_arch = "wasm32"))]
+    wait_window: Arc<crate::wait_windows::Session>,
+    #[cfg(target_os = "linux")]
+    keyboard: Arc<std::sync::Mutex<Option<crate::x11::Keyboard>>>,
 }
 
 impl QuickerRuntime {
@@ -1908,23 +2065,53 @@ impl QuickerRuntime {
         data: &QuickerPluginData,
         state_scope: String,
         control: Option<ActionExecutionControl>,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        Self::with_inputs(data, state_scope, control, &HashMap::new())
+    }
+
+    fn with_inputs(
+        data: &QuickerPluginData,
+        state_scope: String,
+        control: Option<ActionExecutionControl>,
+        inputs: &HashMap<String, Value>,
+    ) -> Result<Self, String> {
         let mut vars = HashMap::new();
+        let mut variable_types = HashMap::new();
         for variable in &data.variables {
-            vars.insert(
-                variable.key.clone(),
-                Value::String(variable.default_value.clone().unwrap_or_default()),
-            );
+            let text = variable.default_value.as_deref().unwrap_or_default();
+            let value = if let Some(value) = inputs.get(&variable.key) {
+                value.clone()
+            } else if text.trim_start().starts_with("$=") {
+                expression::evaluate(text, &vars)?
+            } else {
+                Value::String(text.into())
+            };
+            let value = expression::convert(value, variable.value_type)
+                .map_err(|err| format!("Variable {}: {err}", variable.key))?;
+            vars.insert(variable.key.clone(), value);
+            if let Some(kind) = variable.value_type {
+                variable_types.insert(variable.key.clone(), kind);
+            }
         }
         let action_state = load_action_state_scope(&state_scope);
 
-        Self {
+        Ok(Self {
             vars,
+            variable_types,
             last_message: None,
+            action_title: "Quicker".into(),
             state_scope,
             action_state,
-            control,
-        }
+            control: Some(control.unwrap_or_default()),
+            clipboard_before_copy: None,
+            subprogram_scopes: vec![data.sub_programs.clone()],
+            call_depth: 0,
+            dependency_dir: subprogram::dependency_dir(),
+            #[cfg(not(target_arch = "wasm32"))]
+            wait_window: Default::default(),
+            #[cfg(target_os = "linux")]
+            keyboard: Default::default(),
+        })
     }
 
     fn run_steps(&mut self, steps: &[QuickerPluginStepDocument]) -> Result<StepFlow, String> {
@@ -1948,22 +2135,26 @@ impl QuickerRuntime {
     }
 
     fn run_step(&mut self, step: &QuickerPluginStepDocument) -> Result<StepFlow, String> {
-        match step.step_runner_key.as_str() {
-            "sys:openUrl" => {
+        match runner::StepRunner::from_key(&step.step_runner_key) {
+            Some(runner::StepRunner::GetSelectedFiles) => self.run_selected_files(step),
+            Some(runner::StepRunner::KeyOperation) => self.run_key_operation(step),
+            Some(runner::StepRunner::Run) => self.run_program_step(step),
+            Some(runner::StepRunner::RunScript) => self.run_script_step(step),
+            Some(runner::StepRunner::OpenUrl) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 open_target(&url)
                     .map_err(|err| format!("Failed to open URL '{}': {}", url, err))?;
                 Ok(StepFlow::Continue)
             }
-            "sys:stateStorage" => {
+            Some(runner::StepRunner::StateStorage) => {
                 let mode = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_default();
                 let key = self.input_string(&step.input_params, "key")?;
                 match mode.as_str() {
                     "readActionState" => {
                         let default_value = self
-                            .input_string_opt(&step.input_params, "defaultValue")
+                            .input_string_opt(&step.input_params, "defaultValue")?
                             .unwrap_or_default();
                         let value = self
                             .action_state
@@ -1971,93 +2162,32 @@ impl QuickerRuntime {
                             .cloned()
                             .unwrap_or(default_value);
                         let is_empty = value.trim().is_empty();
-                        self.assign_output(&step.output_params, "value", Value::String(value));
-                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "value", Value::String(value))?;
+                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     "saveActionState" => {
                         let value = self
-                            .input_string_opt(&step.input_params, "value")
+                            .input_string_opt(&step.input_params, "value")?
                             .unwrap_or_default();
                         self.action_state.insert(key.clone(), value.clone());
                         save_action_state_scope(&self.state_scope, &self.action_state)?;
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     other => Err(format!("Unsupported stateStorage type: {other}")),
                 }
             }
-            "sys:MsgBox" => {
-                let title = self
-                    .input_string_opt(&step.input_params, "title")
-                    .unwrap_or_default();
-                let message = self.input_string(&step.input_params, "message")?;
-                show_message_box(&title, &message)?;
-                self.assign_output(&step.output_params, "okOrYes", Value::Bool(true));
-                Ok(StepFlow::Continue)
-            }
-            "sys:selectFolder" => {
-                let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")
-                    .unwrap_or_default();
-                let init_dir = self.input_string_opt(&step.input_params, "initDir");
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match select_folder_dialog(&prompt, init_dir.as_deref()) {
-                    Ok(path) => {
-                        self.assign_output(&step.output_params, "path", Value::String(path));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
-                        Ok(StepFlow::Continue)
-                    }
-                    Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
-                        if stop_if_fail {
-                            Err(err)
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
-            "sys:userInput" => {
-                let prompt = self
-                    .input_string_opt(&step.input_params, "prompt")
-                    .unwrap_or_default();
-                let default_value = self
-                    .input_string_opt(&step.input_params, "defaultValue")
-                    .unwrap_or_default();
-                let multiline = matches!(
-                    self.input_string_opt(&step.input_params, "type").as_deref(),
-                    Some("multiline")
-                );
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match prompt_user_input_dialog(&prompt, &default_value, multiline) {
-                    Ok(text) => {
-                        let is_empty = text.trim().is_empty();
-                        self.assign_output(&step.output_params, "textValue", Value::String(text));
-                        self.assign_output(&step.output_params, "isEmpty", Value::Bool(is_empty));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
-                        Ok(StepFlow::Continue)
-                    }
-                    Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
-                        if stop_if_fail {
-                            Err(err)
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
-            "sys:delay" => {
-                let delay_ms = self
-                    .input_string_opt(&step.input_params, "delayMs")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                sleep_millis(delay_ms, self.control.as_ref())?;
-                Ok(StepFlow::Continue)
-            }
-            "sys:keyInput" => {
+            Some(runner::StepRunner::MsgBox) => self.run_message_box(step),
+            Some(runner::StepRunner::SelectFolder) => self.run_folder_dialog(step),
+            Some(runner::StepRunner::ShowText) => self.run_show_text(step),
+            Some(runner::StepRunner::ShowWaitWin) => self.run_wait_window(step),
+            Some(runner::StepRunner::UserInput) => self.run_input_dialog(step),
+            Some(runner::StepRunner::ManageList) => self.run_manage_list(step),
+            Some(runner::StepRunner::Form) => self.run_form(step),
+            Some(runner::StepRunner::Delay) => self.run_delay(step),
+            Some(runner::StepRunner::KeyInput) => {
                 let keys = self.input_string(&step.input_params, "keys")?;
                 let payload: QuickerKeyInput = serde_json::from_str(&keys)
                     .map_err(|err| format!("Failed to parse keyInput payload: {err}"))?;
@@ -2071,15 +2201,19 @@ impl QuickerRuntime {
                         .filter_map(virtual_key_modifier)
                         .map(str::to_string)
                         .collect::<Vec<_>>();
+                    if key_name.eq_ignore_ascii_case("c") && modifiers.iter().any(|m| m == "ctrl") {
+                        self.clipboard_before_copy =
+                            clipboard_steps::clipboard_snapshot().ok().map(|s| s.0);
+                    }
                     send_key_combo(&modifiers, key_name)?;
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:getClipboardText" => {
+            Some(runner::StepRunner::GetClipboardText) => {
                 let format = self
-                    .input_string_opt(&step.input_params, "format")
+                    .input_string_opt(&step.input_params, "format")?
                     .unwrap_or_else(|| "UnicodeText".into());
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 let result = match format.as_str() {
                     "Html" => read_clipboard_html(),
                     _ => read_clipboard_text(),
@@ -2087,12 +2221,12 @@ impl QuickerRuntime {
 
                 match result {
                     Ok(text) => {
-                        self.assign_output(&step.output_params, "output", Value::String(text));
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "output", Value::String(text))?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2101,17 +2235,20 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:writeClipboard" => {
+            Some(runner::StepRunner::WaitClipboardChange) => self.run_wait_clipboard(step),
+            Some(runner::StepRunner::GetSelectedText) => self.run_selected_text(step),
+            Some(runner::StepRunner::ActivateProcessMainWindow) => self.run_activate_window(step),
+            Some(runner::StepRunner::WriteClipboard) => {
                 let clipboard_type = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_else(|| "auto".into())
                     .to_ascii_lowercase();
-                let success_msg = self.input_string_opt(&step.input_params, "successMsg");
+                let success_msg = self.input_string_opt(&step.input_params, "successMsg")?;
 
                 match clipboard_type.as_str() {
                     "html" => {
                         let html = self.input_string(&step.input_params, "html")?;
-                        let alt_text = self.input_string_opt(&step.input_params, "text");
+                        let alt_text = self.input_string_opt(&step.input_params, "text")?;
                         write_clipboard_html(&html, alt_text.as_deref())?;
                     }
                     "text" => {
@@ -2119,89 +2256,40 @@ impl QuickerRuntime {
                         write_clipboard_text(&text)?;
                     }
                     _ => {
-                        let text = self
-                            .input_string_opt(&step.input_params, "input")
-                            .or_else(|| self.input_string_opt(&step.input_params, "text"))
-                            .unwrap_or_default();
+                        let text = match self.input_string_opt(&step.input_params, "input")? {
+                            Some(text) => text,
+                            None => self
+                                .input_string_opt(&step.input_params, "text")?
+                                .unwrap_or_default(),
+                        };
                         write_clipboard_text(&text)?;
                     }
                 }
 
-                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                 if let Some(message) = success_msg.filter(|value| !value.is_empty()) {
                     self.last_message = Some(message);
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:regexExtract" => {
-                let input = self.input_string(&step.input_params, "data")?;
-                let pattern = self.input_string(&step.input_params, "pattern")?;
-                let get_group = self
-                    .input_string_opt(&step.input_params, "getGroup")
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or(0);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                let regex = compile_step_regex(
-                    &pattern,
-                    self.input_bool(&step.input_params, "ignoreCase"),
-                    self.input_bool(&step.input_params, "singleLine"),
-                    self.input_bool(&step.input_params, "multiLine"),
-                )?;
-
-                let captures = regex
-                    .captures(&input)
-                    .map_err(|err| format!("Regex failed: {err}"))?;
-
-                match captures {
-                    Some(captures) => {
-                        let matched = captures
-                            .get(get_group)
-                            .map(|capture| capture.as_str().to_string())
-                            .unwrap_or_default();
-                        self.assign_regex_outputs(&step.output_params, &matched);
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
-                        Ok(StepFlow::Continue)
-                    }
-                    None => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
-                        if stop_if_fail {
-                            Err(format!("Regex did not match pattern: {pattern}"))
-                        } else {
-                            Ok(StepFlow::Continue)
-                        }
-                    }
-                }
-            }
-            "sys:stringProcess" => {
-                let input = self.input_string(&step.input_params, "data")?;
-                let method = self
-                    .input_string_opt(&step.input_params, "method")
-                    .unwrap_or_default();
-                let output = match method.as_str() {
-                    "toLower" => input.to_lowercase(),
-                    "urlEncode" => urlencoding::encode(&input).into_owned(),
-                    other => return Err(format!("Unsupported stringProcess method: {other}")),
-                };
-                self.assign_output(&step.output_params, "output", Value::String(output));
-                self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
-                Ok(StepFlow::Continue)
-            }
-            "sys:download" => {
+            Some(runner::StepRunner::RegexExtract) => self.run_regex_extract(step),
+            Some(runner::StepRunner::StringProcess) => self.run_string_process(step),
+            Some(runner::StepRunner::Download) => {
                 let url = self.input_string(&step.input_params, "url")?;
                 let save_path = self.input_string(&step.input_params, "savePath")?;
                 let save_name = self
-                    .input_string_opt(&step.input_params, "saveName")
+                    .input_string_opt(&step.input_params, "saveName")?
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| derive_download_file_name(&url));
                 let options = DownloadRequestOptions::from_inputs(
-                    self.input_string_opt(&step.input_params, "ua")
+                    self.input_string_opt(&step.input_params, "ua")?
                         .filter(|value| !value.trim().is_empty()),
-                    self.input_string_opt(&step.input_params, "header")
+                    self.input_string_opt(&step.input_params, "header")?
                         .filter(|value| !value.trim().is_empty()),
-                    self.input_string_opt(&step.input_params, "cookie")
+                    self.input_string_opt(&step.input_params, "cookie")?
                         .filter(|value| !value.trim().is_empty()),
                 );
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                 match download_to_file(
                     &url,
                     &save_path,
@@ -2210,16 +2298,16 @@ impl QuickerRuntime {
                     self.control.as_ref(),
                 ) {
                     Ok(saved_path) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         self.assign_output(
                             &step.output_params,
                             "savedPath",
                             Value::String(saved_path),
-                        );
+                        )?;
                         Ok(StepFlow::Continue)
                     }
                     Err(err) => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
                             Err(err)
                         } else {
@@ -2228,36 +2316,12 @@ impl QuickerRuntime {
                     }
                 }
             }
-            "sys:readFile" => {
-                let path = normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                let file_type = self
-                    .input_string_opt(&step.input_params, "type")
-                    .unwrap_or_default();
-                match file_type.as_str() {
-                    "image" => match read_file_path_reference(&path) {
-                        Ok(value) => {
-                            self.assign_output(&step.output_params, "image", Value::String(value));
-                            self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
-                            Ok(StepFlow::Continue)
-                        }
-                        Err(err) => {
-                            self.assign_output(
-                                &step.output_params,
-                                "isSuccess",
-                                Value::Bool(false),
-                            );
-                            if stop_if_fail {
-                                Err(err)
-                            } else {
-                                Ok(StepFlow::Continue)
-                            }
-                        }
-                    },
-                    other => Err(format!("Unsupported readFile type: {other}")),
-                }
-            }
-            "sys:imageinfo" => {
+            Some(runner::StepRunner::ReadFile) => self.run_read_file(step),
+            Some(runner::StepRunner::ListOperations) => self.run_list_operation(step),
+            Some(runner::StepRunner::Comment) => Ok(StepFlow::Continue),
+            Some(runner::StepRunner::WriteTextFile) => self.run_write_text_file(step),
+            Some(runner::StepRunner::SelectFile) => self.run_file_dialog(step),
+            Some(runner::StepRunner::Imageinfo) => {
                 let path =
                     normalize_runtime_path(&self.input_string(&step.input_params, "bmpVar")?);
                 let bytes = read_binary_file(&path)?;
@@ -2266,40 +2330,40 @@ impl QuickerRuntime {
                     &step.output_params,
                     "width",
                     Value::Number(serde_json::Number::from(width)),
-                );
+                )?;
                 self.assign_output(
                     &step.output_params,
                     "height",
                     Value::Number(serde_json::Number::from(height)),
-                );
+                )?;
                 Ok(StepFlow::Continue)
             }
-            "sys:imgToBase64" => {
+            Some(runner::StepRunner::ImgToBase64) => {
                 let path = normalize_runtime_path(&self.input_string(&step.input_params, "img")?);
                 let bytes = read_binary_file(&path)?;
                 self.assign_output(
                     &step.output_params,
                     "code",
                     Value::String(base64_encode(&bytes)),
-                );
+                )?;
                 Ok(StepFlow::Continue)
             }
-            "sys:fileOperation" => {
+            Some(runner::StepRunner::FileOperation) => {
                 let op = self
-                    .input_string_opt(&step.input_params, "type")
+                    .input_string_opt(&step.input_params, "type")?
                     .unwrap_or_default();
                 match op.as_str() {
                     "deleteFile" => {
                         let path =
                             normalize_runtime_path(&self.input_string(&step.input_params, "path")?);
-                        let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
+                        let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
                         match delete_file_path(&path) {
                             Ok(()) => {
                                 self.assign_output(
                                     &step.output_params,
                                     "isSuccess",
                                     Value::Bool(true),
-                                );
+                                )?;
                                 Ok(StepFlow::Continue)
                             }
                             Err(err) => {
@@ -2307,7 +2371,7 @@ impl QuickerRuntime {
                                     &step.output_params,
                                     "isSuccess",
                                     Value::Bool(false),
-                                );
+                                )?;
                                 if stop_if_fail {
                                     Err(err)
                                 } else {
@@ -2319,53 +2383,54 @@ impl QuickerRuntime {
                     other => Err(format!("Unsupported fileOperation type: {other}")),
                 }
             }
-            "sys:splitString" => {
+            Some(runner::StepRunner::SplitString) => {
                 let input = self.input_string(&step.input_params, "data")?;
                 let separator = self
-                    .input_string_opt(&step.input_params, "separator")
+                    .input_string_opt(&step.input_params, "separator")?
                     .unwrap_or_default();
-                let separator = if self.input_bool(&step.input_params, "escapeSeparator") {
+                let separator = if self.input_bool(&step.input_params, "escapeSeparator")? {
                     unescape_basic(&separator)
                 } else {
                     separator
                 };
-                let remove_empty = self.input_bool(&step.input_params, "removeEmpty");
+                let remove_empty = self.input_bool(&step.input_params, "removeEmpty")?;
                 let values = input
                     .split(&separator)
                     .filter(|part| !remove_empty || !part.is_empty())
                     .map(|part| Value::String(part.to_string()))
                     .collect::<Vec<_>>();
-                self.assign_output(&step.output_params, "output", Value::Array(values));
+                self.assign_output(&step.output_params, "output", Value::Array(values))?;
                 Ok(StepFlow::Continue)
             }
-            "sys:assign" => {
-                let input = self.input_string(&step.input_params, "input")?;
-                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail");
-                match self.eval_assign_expression(&input) {
-                    Some(value) => {
-                        self.assign_output(&step.output_params, "output", value);
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true));
+            Some(runner::StepRunner::Assign) => {
+                let stop_if_fail = self.input_bool(&step.input_params, "stopIfFail")?;
+                match self.input_value(&step.input_params, "input") {
+                    Ok(Some(value)) => {
+                        self.assign_output(&step.output_params, "output", value)?;
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(true))?;
                         Ok(StepFlow::Continue)
                     }
-                    None => {
-                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false));
+                    result => {
+                        self.assign_output(&step.output_params, "isSuccess", Value::Bool(false))?;
                         if stop_if_fail {
-                            Err(format!("Failed to evaluate assign input: {input}"))
+                            Err(result
+                                .err()
+                                .unwrap_or_else(|| "Missing assign input".into()))
                         } else {
                             Ok(StepFlow::Continue)
                         }
                     }
                 }
             }
-            "sys:strReplace" => {
+            Some(runner::StepRunner::StrReplace) => {
                 let input = self.input_string(&step.input_params, "input")?;
                 let old = self
-                    .input_string_opt(&step.input_params, "old")
+                    .input_string_opt(&step.input_params, "old")?
                     .unwrap_or_default();
                 let new = self
-                    .input_string_opt(&step.input_params, "new")
+                    .input_string_opt(&step.input_params, "new")?
                     .unwrap_or_default();
-                let replace_escapes = self.input_bool(&step.input_params, "replaceEscapes");
+                let replace_escapes = self.input_bool(&step.input_params, "replaceEscapes")?;
                 let old = if replace_escapes {
                     unescape_basic(&old)
                 } else {
@@ -2376,155 +2441,147 @@ impl QuickerRuntime {
                 } else {
                     new
                 };
-                let output = if self.input_bool(&step.input_params, "useRegex") {
+                let output = if self.input_bool(&step.input_params, "useRegex")? {
                     let regex = compile_step_regex(
                         &old,
-                        self.input_bool(&step.input_params, "ignoreCase"),
-                        self.input_bool(&step.input_params, "singleLine"),
-                        self.input_bool(&step.input_params, "multiLine"),
+                        self.input_bool(&step.input_params, "ignoreCase")?,
+                        self.input_bool(&step.input_params, "singleLine")?,
+                        self.input_bool(&step.input_params, "multiLine")?,
                     )?;
                     regex.replace_all(&input, new.as_str()).into_owned()
                 } else {
                     input.replace(&old, &new)
                 };
-                self.assign_output(&step.output_params, "output", Value::String(output));
+                self.assign_output(&step.output_params, "output", Value::String(output))?;
                 Ok(StepFlow::Continue)
             }
-            "sys:simpleIf" => {
-                let condition = self.input_value(&step.input_params, "condition");
+            Some(runner::StepRunner::SimpleIf | runner::StepRunner::If) => {
+                let condition = self.input_value(&step.input_params, "condition")?;
                 let branch = if truthy(condition.as_ref()) {
                     step.if_steps.as_deref().unwrap_or(&[])
-                } else {
+                } else if step.step_runner_key == "sys:if" {
                     step.else_steps.as_deref().unwrap_or(&[])
+                } else {
+                    &[]
                 };
                 self.run_steps(branch)
             }
-            "sys:group" => self.run_steps(step.if_steps.as_deref().unwrap_or(&[])),
-            "sys:stop" => {
-                let is_error = self.input_bool(&step.input_params, "isError");
-                let message = self.input_string_opt(&step.input_params, "showMessage");
+            Some(runner::StepRunner::Repeat) => self.run_repeat(step),
+            Some(runner::StepRunner::Each) => self.run_each(step),
+            Some(runner::StepRunner::Break) => Ok(StepFlow::BreakLoop),
+            Some(runner::StepRunner::Continue) => Ok(StepFlow::NextIteration),
+            Some(runner::StepRunner::Group) => {
+                self.run_steps(step.if_steps.as_deref().unwrap_or(&[]))
+            }
+            Some(runner::StepRunner::Subprogram) => self.run_subprogram(step),
+            Some(runner::StepRunner::Stop) => {
+                let method = self
+                    .input_string_opt(&step.input_params, "method")?
+                    .unwrap_or_else(|| "default".into());
+                if method == "forcestop" {
+                    return Ok(StepFlow::StopAction(
+                        self.input_string_opt(&step.input_params, "showMessage")?,
+                    ));
+                }
+                if method != "default" {
+                    return Err(format!("Unsupported stop method: {method}"));
+                }
+                let is_error = self.input_bool(&step.input_params, "isError")?;
+                let message = self.input_string_opt(&step.input_params, "showMessage")?;
                 if is_error {
                     Err(message.unwrap_or_else(|| "Quicker action stopped with an error".into()))
                 } else {
                     Ok(StepFlow::Stop(message))
                 }
             }
-            "sys:formatString" => {
+            Some(runner::StepRunner::FormatString) => {
                 let format_string = self
-                    .input_string_opt(&step.input_params, "formatString")
+                    .input_string_opt(&step.input_params, "formatString")?
                     .unwrap_or_default();
                 let mut output = format_string;
                 for idx in 0..=4 {
                     let value = self
-                        .input_string_opt(&step.input_params, &format!("p{idx}"))
+                        .input_string_opt(&step.input_params, &format!("p{idx}"))?
                         .unwrap_or_default();
                     output = output.replace(&format!("{{{idx}}}"), &value);
                 }
-                self.assign_output(&step.output_params, "output", Value::String(output));
+                self.assign_output(&step.output_params, "output", Value::String(output))?;
                 Ok(StepFlow::Continue)
             }
-            "sys:notify" => {
-                if let Some(message) = self.input_string_opt(&step.input_params, "msg") {
+            Some(runner::StepRunner::Notify) => {
+                if let Some(message) = self.input_string_opt(&step.input_params, "msg")? {
                     self.last_message = Some(message);
                 }
                 Ok(StepFlow::Continue)
             }
-            "sys:reportProgress" => Ok(StepFlow::Continue),
-            "sys:outputText" => {
-                let content = self.input_string(&step.input_params, "content")?;
-                let method = self
-                    .input_string_opt(&step.input_params, "method")
-                    .unwrap_or_else(|| "paste".into());
-                let before = self
-                    .input_string_opt(&step.input_params, "delayBeforePaste")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let after = self
-                    .input_string_opt(&step.input_params, "delayAfterPaste")
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let append_return = self.input_bool(&step.input_params, "appendReturn");
-
-                match method.as_str() {
-                    "paste" => {
-                        write_clipboard_text(&content)?;
-                        sleep_millis(before, self.control.as_ref())?;
-                        send_key_combo(&["ctrl".into()], "v")?;
-                        if append_return {
-                            send_key_combo(&[], "Return")?;
-                        }
-                        sleep_millis(after, self.control.as_ref())?;
-                    }
-                    other => return Err(format!("Unsupported outputText method: {other}")),
-                }
-
-                Ok(StepFlow::Continue)
-            }
-            other => Err(format!("Unsupported Quicker step: {other}")),
+            Some(runner::StepRunner::ReportProgress) => Ok(StepFlow::Continue),
+            Some(runner::StepRunner::OutputText) => self.run_output_text(step),
+            None => Err(format!(
+                "Unsupported Quicker step: {}",
+                step.step_runner_key
+            )),
         }
     }
 
-    fn input_value(&self, params: &Map<String, Value>, key: &str) -> Option<Value> {
-        let raw = params.get(key)?;
-        let binding: QuickerValueBinding = serde_json::from_value(raw.clone()).ok()?;
+    fn input_value(&self, params: &Map<String, Value>, key: &str) -> Result<Option<Value>, String> {
+        let Some(raw) = params.get(key) else {
+            return Ok(None);
+        };
+        let binding: QuickerValueBinding = serde_json::from_value(raw.clone())
+            .map_err(|err| format!("Invalid input binding {key}: {err}"))?;
         if let Some(var_key) = binding.var_key.as_deref() {
-            return self.vars.get(var_key).cloned();
+            return self
+                .vars
+                .get(var_key)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| format!("Unknown variable: {var_key}"));
         }
-
-        binding.value.map(|value| match value {
-            Value::String(text) => Value::String(expand_runtime_vars(&text, &self.vars)),
-            other => other,
-        })
+        match binding.value {
+            Some(Value::String(text)) if text.trim_start().starts_with("$=") => {
+                expression::evaluate(&text, &self.vars)
+                    .map(Some)
+                    .map_err(|err| format!("Input {key}: {err}"))
+            }
+            Some(Value::String(text)) => {
+                Ok(Some(Value::String(expand_runtime_vars(&text, &self.vars))))
+            }
+            other => Ok(other),
+        }
     }
 
     fn input_string(&self, params: &Map<String, Value>, key: &str) -> Result<String, String> {
-        self.input_string_opt(params, key)
+        self.input_string_opt(params, key)?
             .ok_or_else(|| format!("Missing input param: {key}"))
     }
 
-    fn input_string_opt(&self, params: &Map<String, Value>, key: &str) -> Option<String> {
-        self.input_value(params, key)
-            .map(|value| value_to_string(&value))
+    fn input_string_opt(
+        &self,
+        params: &Map<String, Value>,
+        key: &str,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .input_value(params, key)?
+            .map(|value| value_to_string(&value)))
     }
 
-    fn input_bool(&self, params: &Map<String, Value>, key: &str) -> bool {
-        truthy(self.input_value(params, key).as_ref())
+    fn input_bool(&self, params: &Map<String, Value>, key: &str) -> Result<bool, String> {
+        Ok(truthy(self.input_value(params, key)?.as_ref()))
     }
 
-    fn assign_output(&mut self, params: &Map<String, Value>, key: &str, value: Value) {
+    fn assign_output(
+        &mut self,
+        params: &Map<String, Value>,
+        key: &str,
+        value: Value,
+    ) -> Result<(), String> {
         let Some(name) = output_var_name(params, key) else {
-            return;
+            return Ok(());
         };
+        let value = expression::convert(value, self.variable_types.get(&name).copied())
+            .map_err(|err| format!("Output {key} to variable {name}: {err}"))?;
         self.vars.insert(name, value);
-    }
-
-    fn assign_regex_outputs(&mut self, params: &Map<String, Value>, matched: &str) {
-        for candidate in ["match1", "matches", "output"] {
-            self.assign_output(params, candidate, Value::String(matched.to_string()));
-        }
-    }
-
-    fn eval_assign_expression(&self, input: &str) -> Option<Value> {
-        let trimmed = input.trim();
-        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}\[(\d+)\]$")
-            .ok()
-            .and_then(|regex| regex.captures(trimmed).ok().flatten())
-        {
-            let name = captures.get(1)?.as_str();
-            let index = captures.get(2)?.as_str().parse::<usize>().ok()?;
-            let values = self.vars.get(name)?.as_array()?;
-            return values.get(index).cloned();
-        }
-
-        if let Some(captures) = Regex::new(r"^\$=\{([^}]+)\}$")
-            .ok()
-            .and_then(|regex| regex.captures(trimmed).ok().flatten())
-        {
-            let name = captures.get(1)?.as_str();
-            return self.vars.get(name).cloned();
-        }
-
-        Some(Value::String(expand_runtime_vars(trimmed, &self.vars)))
+        Ok(())
     }
 }
 
@@ -2546,11 +2603,11 @@ fn execute_quicker_action_document(
     }
 
     match document.action_type {
-        QUICKER_PLUGIN_ACTION_TYPE => execute_quicker_plugin_steps(&document, control),
+        QUICKER_PLUGIN_ACTION_TYPE | QUICKER_SUBPROGRAM_ACTION_TYPE => execute_quicker_plugin_steps(&document, control),
         QUICKER_OPEN_ACTION_TYPE => execute_quicker_launch(&document),
         QUICKER_KEYS_ACTION_TYPE => execute_quicker_key_macro(&document, control),
         action_type => ExecResult::Err(format!(
-            "Unsupported Quicker action type {action_type}. Supported sample types are 7, 11, and 24."
+            "Unsupported Quicker action type {action_type}. Supported action types are 7, 11, 24, and 25."
         )),
     }
 }
@@ -2575,16 +2632,25 @@ fn execute_quicker_plugin_steps(
         .id
         .clone()
         .unwrap_or_else(|| document.title.clone());
-    let mut runtime = QuickerRuntime::new(&data, state_scope, control.cloned());
+    let mut runtime = match QuickerRuntime::new(&data, state_scope, control.cloned()) {
+        Ok(runtime) => runtime,
+        Err(error) => return ExecResult::Err(error),
+    };
+    runtime.action_title = document.title.clone();
     match runtime.run_steps(&data.steps) {
         Ok(StepFlow::Continue) => match runtime.last_message {
             Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
             _ => ExecResult::Ok,
         },
-        Ok(StepFlow::Stop(message)) => match message.or(runtime.last_message) {
-            Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
-            _ => ExecResult::Ok,
-        },
+        Ok(StepFlow::Stop(message) | StepFlow::StopAction(message)) => {
+            match message.or(runtime.last_message) {
+                Some(message) if !message.is_empty() => ExecResult::OkWithMessage(message),
+                _ => ExecResult::Ok,
+            }
+        }
+        Ok(StepFlow::BreakLoop | StepFlow::NextIteration) => {
+            ExecResult::Err("Loop control requires an enclosing loop".into())
+        }
         Err(err) => ExecResult::Err(err),
     }
 }
@@ -2604,11 +2670,10 @@ fn execute_quicker_launch(document: &QuickerActionDocument) -> ExecResult {
         };
     }
 
-    let args = launch
-        .arguments
-        .split_whitespace()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let args = match run_steps::parse_arguments(&launch.arguments) {
+        Ok(args) => args,
+        Err(error) => return ExecResult::Err(error),
+    };
     let working_dir = launch
         .set_working_dir
         .then(|| {
@@ -2732,9 +2797,9 @@ fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
     while let Some(ch) = chars.next() {
         if ch == '{' {
             let mut name = String::new();
-            let mut probe = chars.clone();
+            let probe = chars.clone();
             let mut found_end = false;
-            while let Some(next) = probe.next() {
+            for next in probe {
                 if next == '}' {
                     found_end = true;
                     break;
@@ -2746,7 +2811,7 @@ fn expand_runtime_vars(input: &str, vars: &HashMap<String, Value>) -> String {
                 && !name.chars().all(|ch| ch.is_ascii_digit())
                 && vars.contains_key(&name)
             {
-                for _ in 0..name.len() {
+                for _ in 0..name.chars().count() {
                     chars.next();
                 }
                 chars.next();
@@ -2774,7 +2839,7 @@ fn output_var_name(params: &Map<String, Value>, key: &str) -> Option<String> {
 fn truthy(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_i64().unwrap_or(0) != 0,
+        Some(Value::Number(value)) => value.as_f64().is_some_and(|n| n != 0.0),
         Some(Value::String(value)) => {
             let normalized = value.trim();
             !normalized.is_empty()
@@ -2974,7 +3039,12 @@ fn spawn_program(command: &str, args: &[String], working_dir: Option<&str>) -> E
         cmd.current_dir(dir);
     }
     match cmd.spawn() {
-        Ok(_) => ExecResult::Ok,
+        Ok(mut child) => {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            ExecResult::Ok
+        }
         Err(e) => ExecResult::Err(format!("Failed to run '{}': {}", command, e)),
     }
 }
@@ -2999,6 +3069,23 @@ fn open_target(_target: &str) -> Result<(), String> {
     Err("Opening native targets is unavailable in the web preview".into())
 }
 
+// Keep the selection owner alive after action worker threads exit. On X11,
+// destroying the last clipboard handle also discards copied content.
+#[cfg(not(target_arch = "wasm32"))]
+static CLIPBOARD_OWNER: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mutex::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn with_clipboard_owner(
+    f: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error>,
+) -> Result<(), String> {
+    let mut owner = CLIPBOARD_OWNER.lock().map_err(|err| err.to_string())?;
+    if owner.is_none() {
+        *owner = Some(arboard::Clipboard::new().map_err(|err| err.to_string())?);
+    }
+    f(owner.as_mut().expect("clipboard initialized"))
+        .map_err(|err| format!("Clipboard error: {err}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn write_clipboard_text(text: &str) -> Result<(), String> {
     #[cfg(test)]
@@ -3006,10 +3093,7 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
         return result;
     }
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-    clipboard
-        .set_text(text)
-        .map_err(|e| format!("Clipboard error: {}", e))
+    with_clipboard_owner(|clipboard| clipboard.set_text(text))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3024,10 +3108,7 @@ fn write_clipboard_html(html: &str, alt_text: Option<&str>) -> Result<(), String
         return result;
     }
 
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
-    clipboard
-        .set_html(html, alt_text)
-        .map_err(|e| format!("Clipboard error: {}", e))
+    with_clipboard_owner(|clipboard| clipboard.set_html(html, alt_text))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3056,6 +3137,23 @@ fn read_clipboard_html() -> Result<String, String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn read_clipboard_text() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(result) = with_action_test_runtime(|runtime| {
+        if runtime.standard_clipboard_reads.is_empty() && runtime.primary_clipboard_reads.is_empty()
+        {
+            return None;
+        }
+        let standard = runtime.standard_clipboard_reads.pop_front().flatten();
+        let primary = if cfg!(target_os = "linux") {
+            runtime.primary_clipboard_reads.pop_front().flatten()
+        } else {
+            None
+        };
+        Some(normalize_clipboard_text(standard).or_else(|| normalize_clipboard_text(primary))
+            .ok_or_else(|| "No usable text was found in the clipboard. On Linux, select text first or copy it explicitly.".to_string()))
+    }) {
+        return result;
+    }
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("Clipboard error: {}", e))?;
 
     if let Some(text) = read_standard_clipboard_text(&mut clipboard) {
@@ -3148,13 +3246,15 @@ fn save_action_state_scope(scope: &str, state: &HashMap<String, String>) -> Resu
 
     let path = action_state_store_path();
     let mut store = match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str::<ActionStateStore>(&content).unwrap_or_default(),
-        Err(_) => HashMap::new(),
+        Ok(content) => serde_json::from_str::<ActionStateStore>(&content)
+            .map_err(|err| format!("Invalid action state file: {err}"))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+        Err(err) => return Err(format!("Cannot read action state file: {err}")),
     };
     store.insert(scope.to_string(), state.clone());
     let content = serde_json::to_string_pretty(&store)
         .map_err(|err| format!("Failed to serialize action state store: {err}"))?;
-    std::fs::write(&path, content)
+    crate::storage::atomic_write(&path, content.as_bytes())
         .map_err(|err| format!("Failed to save action state store: {err}"))
 }
 
@@ -3163,11 +3263,11 @@ fn save_action_state_scope(_scope: &str, _state: &HashMap<String, String>) -> Re
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
 fn show_message_box(title: &str, message: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_show_message_box(title, message) {
-        return result;
+        return result.map(|_| ());
     }
 
     #[cfg(target_os = "windows")]
@@ -3253,7 +3353,11 @@ fn show_message_box(_title: &str, _message: &str) -> Result<(), String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, String> {
+fn select_folder_dialog(
+    prompt: &str,
+    init_dir: Option<&str>,
+    control: Option<&ActionExecutionControl>,
+) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_select_folder_dialog(prompt, init_dir) {
         return result;
@@ -3262,14 +3366,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     #[cfg(target_os = "windows")]
     {
         let script = "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dlg.ShowDialog() -eq 'OK') { Write-Output $dlg.SelectedPath }";
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(script)
-            .output()
-            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        let mut command = Command::new("powershell");
+        command.arg("-NoProfile").arg("-Command").arg(script);
+        let output = run_command_for_output(command, control, "dialog")?;
         if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let text = dialogs::decode_text_output(&output.stdout)?;
             if text.is_empty() {
                 Err("Folder selection was cancelled".into())
             } else {
@@ -3281,20 +3382,18 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
     }
     #[cfg(target_os = "macos")]
     {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
-                "choose folder with prompt {:?}",
-                if prompt.is_empty() {
-                    "Select folder"
-                } else {
-                    prompt
-                }
-            ))
-            .output()
-            .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+        let mut command = Command::new("osascript");
+        command.arg("-e").arg(format!(
+            "choose folder with prompt {:?}",
+            if prompt.is_empty() {
+                "Select folder"
+            } else {
+                prompt
+            }
+        ));
+        let output = run_command_for_output(command, control, "dialog")?;
         if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let text = dialogs::decode_text_output(&output.stdout)?;
             if text.is_empty() {
                 Err("Folder selection was cancelled".into())
             } else {
@@ -3309,19 +3408,20 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
         if which::which("kdialog").is_ok() {
             let mut command = Command::new("kdialog");
             command.arg("--getexistingdirectory");
-            if let Some(init) = init_dir.filter(|value| !value.trim().is_empty()) {
-                command.arg(init);
-            }
+            command.env("QT_QPA_PLATFORMTHEME", "generic");
             command.arg("--title").arg(if prompt.is_empty() {
                 "Select folder"
             } else {
                 prompt
             });
-            let output = command
-                .output()
-                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+            if let Some(init) = init_dir.filter(|value| !value.is_empty()) {
+                command
+                    .arg("--")
+                    .arg(format!("{}/", init.trim_end_matches('/')));
+            }
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let text = dialogs::decode_text_output(&output.stdout)?;
                 if text.is_empty() {
                     Err("Folder selection was cancelled".into())
                 } else {
@@ -3331,7 +3431,12 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
                 Err(format!("Folder dialog exited with {}", output.status))
             }
         } else if which::which("zenity").is_ok() {
-            let output = Command::new("zenity")
+            let mut command = Command::new("zenity");
+            dialogs::configure_zenity(&mut command);
+            command
+                .env("GTK_USE_PORTAL", "0")
+                .env("GDK_DEBUG", "no-portals")
+                .env("XDG_CURRENT_DESKTOP", "X-Generic")
                 .arg("--file-selection")
                 .arg("--directory")
                 .arg("--title")
@@ -3339,11 +3444,15 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
                     "Select folder"
                 } else {
                     prompt
-                })
-                .output()
-                .map_err(|err| format!("Failed to open folder dialog: {err}"))?;
+                });
+            if let Some(init) = init_dir.filter(|s| !s.is_empty()) {
+                command
+                    .arg("--filename")
+                    .arg(format!("{}/", init.trim_end_matches('/')));
+            }
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let text = dialogs::decode_text_output(&output.stdout)?;
                 if text.is_empty() {
                     Err("Folder selection was cancelled".into())
                 } else {
@@ -3359,7 +3468,11 @@ fn select_folder_dialog(prompt: &str, init_dir: Option<&str>) -> Result<String, 
 }
 
 #[cfg(target_arch = "wasm32")]
-fn select_folder_dialog(_prompt: &str, _init_dir: Option<&str>) -> Result<String, String> {
+fn select_folder_dialog(
+    _prompt: &str,
+    _init_dir: Option<&str>,
+    _control: Option<&ActionExecutionControl>,
+) -> Result<String, String> {
     Err("Folder selection is unavailable in the web preview".into())
 }
 
@@ -3368,93 +3481,104 @@ fn prompt_user_input_dialog(
     prompt: &str,
     default_value: &str,
     multiline: bool,
+    restore: bool,
+    control: Option<&ActionExecutionControl>,
 ) -> Result<String, String> {
     #[cfg(test)]
     if let Some(result) = test_prompt_user_input_dialog(prompt, default_value, multiline) {
         return result;
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
+    #[cfg(target_os = "linux")]
+    let focus = dialogs::DialogFocus::capture(restore)?;
+    let result = (|| {
+        #[cfg(target_os = "windows")]
+        {
+            let script = format!(
             "Add-Type -AssemblyName Microsoft.VisualBasic; $v=[Microsoft.VisualBasic.Interaction]::InputBox(@'\n{}\n'@, 'Input', @'\n{}\n'@); Write-Output $v",
             prompt, default_value
         );
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
-            .arg("-Command")
-            .arg(script)
-            .output()
-            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string())
-        } else {
-            Err(format!("Input dialog exited with {}", output.status))
+            let mut command = Command::new("powershell");
+            command.arg("-NoProfile").arg("-Command").arg(script);
+            let output = run_command_for_output(command, control, "dialog")?;
+            if output.status.success() {
+                dialogs::decode_text_output(&output.stdout)
+            } else {
+                Err(format!("Input dialog exited with {}", output.status))
+            }
         }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = Command::new("osascript");
+            command.arg("-e").arg(format!(
                 "text returned of (display dialog {:?} default answer {:?} with title \"Input\")",
                 prompt, default_value
-            ))
-            .output()
-            .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout)
-                .trim_end()
-                .to_string())
-        } else {
-            Err(format!("Input dialog exited with {}", output.status))
-        }
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if which::which("kdialog").is_ok() {
-            let mut command = Command::new("kdialog");
-            if multiline {
-                command.arg("--textinputbox");
-            } else {
-                command.arg("--inputbox");
-            }
-            let output = command
-                .arg(if prompt.is_empty() { "Input" } else { prompt })
-                .arg(default_value)
-                .output()
-                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
+            ));
+            let output = run_command_for_output(command, control, "dialog")?;
             if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout)
-                    .trim_end()
-                    .to_string())
+                dialogs::decode_text_output(&output.stdout)
             } else {
                 Err(format!("Input dialog exited with {}", output.status))
             }
-        } else if which::which("zenity").is_ok() {
-            let output = Command::new("zenity")
-                .arg("--entry")
-                .arg("--title")
-                .arg("Input")
-                .arg("--text")
-                .arg(if prompt.is_empty() { "Input" } else { prompt })
-                .arg("--entry-text")
-                .arg(default_value)
-                .output()
-                .map_err(|err| format!("Failed to open input dialog: {err}"))?;
-            if output.status.success() {
-                Ok(String::from_utf8_lossy(&output.stdout)
-                    .trim_end()
-                    .to_string())
-            } else {
-                Err(format!("Input dialog exited with {}", output.status))
-            }
-        } else {
-            Err("No supported input dialog backend was found".into())
         }
-    }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            if which::which("kdialog").is_ok() {
+                let mut command = Command::new("kdialog");
+                if multiline {
+                    command.arg("--textinputbox");
+                } else {
+                    command.arg("--inputbox");
+                }
+                command
+                    .arg(if prompt.is_empty() { "Input" } else { prompt })
+                    .arg("--")
+                    .arg(default_value);
+                let output = run_command_for_output(command, control, "dialog")?;
+                if output.status.success() {
+                    dialogs::decode_text_output(&output.stdout)
+                } else {
+                    Err(format!("Input dialog exited with {}", output.status))
+                }
+            } else if which::which("zenity").is_ok() {
+                let mut command = Command::new("zenity");
+                dialogs::configure_zenity(&mut command);
+                command.args(["--title", "Input", "--no-markup"]);
+                let mut initial = None;
+                if multiline {
+                    use std::io::Write;
+                    let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+                    file.write_all(default_value.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    command.args(["--text-info", "--editable", "--filename"]);
+                    command.arg(file.path());
+                    command
+                        .arg("--title")
+                        .arg(if prompt.is_empty() { "Input" } else { prompt });
+                    initial = Some(file);
+                } else {
+                    command.args(["--entry", "--text", prompt, "--entry-text", default_value]);
+                }
+                let output = run_command_for_output(command, control, "input dialog")?;
+                drop(initial);
+                if output.status.success() {
+                    if multiline {
+                        dialogs::decode_exact_output(&output.stdout)
+                    } else {
+                        dialogs::decode_text_output(&output.stdout)
+                    }
+                } else {
+                    Err(format!("Input dialog exited with {}", output.status))
+                }
+            } else {
+                Err("No supported input dialog backend was found".into())
+            }
+        }
+    })();
+    ensure_not_cancelled(control)?;
+    #[cfg(target_os = "linux")]
+    focus.restore(control)?;
+    result
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3462,6 +3586,8 @@ fn prompt_user_input_dialog(
     _prompt: &str,
     _default_value: &str,
     _multiline: bool,
+    _restore: bool,
+    _control: Option<&ActionExecutionControl>,
 ) -> Result<String, String> {
     Err("Prompt dialogs are unavailable in the web preview".into())
 }
@@ -3834,58 +3960,6 @@ fn ensure_not_cancelled(control: Option<&ActionExecutionControl>) -> Result<(), 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn wait_for_child_cancelable(
-    child: &mut Child,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<ExitStatus, String> {
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|err| format!("Failed while waiting for {context}: {err}"))?
-        {
-            return Ok(status);
-        }
-
-        if control.is_some_and(ActionExecutionControl::is_cancelled) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(cancellation_error());
-        }
-
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_command_for_status(
-    mut command: Command,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<ExitStatus, String> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("Failed to start {context}: {err}"))?;
-    wait_for_child_cancelable(&mut child, control, context)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_command_for_output(
-    mut command: Command,
-    control: Option<&ActionExecutionControl>,
-    context: &str,
-) -> Result<Output, String> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("Failed to start {context}: {err}"))?;
-    wait_for_child_cancelable(&mut child, control, context)?;
-    child
-        .wait_with_output()
-        .map_err(|err| format!("Failed to collect {context} output: {err}"))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn run_shell_command(
     script: &str,
     shell: &str,
@@ -4003,7 +4077,9 @@ fn windows_send_keys_key_token(key: &str) -> Result<String, String> {
                     };
                     Ok(escape_windows_send_keys_text(&normalized))
                 }
-                _ => Err(format!("Unsupported key on Windows SendKeys backend: {trimmed}")),
+                _ => Err(format!(
+                    "Unsupported key on Windows SendKeys backend: {trimmed}"
+                )),
             }
         }
     }
@@ -4043,6 +4119,10 @@ fn send_key_combo(modifiers: &[String], key: &str) -> Result<(), String> {
     #[cfg(test)]
     if let Some(result) = test_send_key_combo(modifiers, key) {
         return result;
+    }
+
+    if crate::x11::is_wayland() {
+        return Err("Key automation requires an X11 session".into());
     }
 
     let xdotool = which::which("xdotool")
@@ -4106,14 +4186,21 @@ fn type_input_text(text: &str) -> Result<(), String> {
         return result;
     }
 
+    if crate::x11::is_wayland() {
+        return Err("Text automation requires an X11 session".into());
+    }
+
     let xdotool = which::which("xdotool")
         .map_err(|_| "Quicker text automation requires xdotool on this system".to_string())?;
 
     Command::new(xdotool)
         .arg("type")
         .arg("--delay")
-        .arg("0")
+        // xdotool temporarily maps Unicode keysyms. A zero delay can remove
+        // that mapping before the target processes the key event.
+        .arg("12")
         .arg("--clearmodifiers")
+        .arg("--")
         .arg(text)
         .status()
         .map_err(|err| format!("Failed to invoke xdotool: {err}"))
@@ -4198,11 +4285,11 @@ fn parse_json_lenient<T: DeserializeOwned>(input: &str, context: &str) -> Result
 
 fn sanitize_json_control_chars(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars();
+    let chars = input.chars();
     let mut in_string = false;
     let mut escaped = false;
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         if in_string {
             if escaped {
                 output.push(ch);
@@ -4250,6 +4337,9 @@ struct SpawnCall {
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct ActionTestRuntime {
+    file_selection_results: VecDeque<Result<Vec<String>, String>>,
+    clipboard_snapshots: VecDeque<Result<(u64, Option<u32>), String>>,
+    raw_clipboard_reads: VecDeque<Result<String, String>>,
     spawn_calls: Vec<SpawnCall>,
     spawn_results: VecDeque<ExecResult>,
     opened_targets: Vec<String>,
@@ -4270,7 +4360,7 @@ struct ActionTestRuntime {
     delays: Vec<u64>,
     action_state_store: ActionStateStore,
     message_boxes: Vec<(String, String)>,
-    message_box_results: VecDeque<Result<(), String>>,
+    message_box_results: VecDeque<Result<String, String>>,
     folder_dialog_results: VecDeque<Result<String, String>>,
     input_dialog_results: VecDeque<Result<String, String>>,
     download_calls: Vec<(String, String, String, DownloadRequestOptions)>,
@@ -4405,7 +4495,7 @@ fn test_save_action_state_scope(scope: &str, state: &HashMap<String, String>) ->
 }
 
 #[cfg(test)]
-fn test_show_message_box(title: &str, message: &str) -> Option<Result<(), String>> {
+fn test_show_message_box(title: &str, message: &str) -> Option<Result<String, String>> {
     with_action_test_runtime(|runtime| {
         runtime
             .message_boxes
@@ -4481,6 +4571,77 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn input_target_detection_handles_nested_and_disabled_steps() {
+        let flow = |steps: Value| {
+            Action::from_quicker_plugin_json(
+                &serde_json::json!({
+                    "ActionType": 24,
+                    "Title": "Input detection",
+                    "Data": serde_json::json!({ "Steps": steps }).to_string(),
+                })
+                .to_string(),
+            )
+            .unwrap()
+        };
+        assert!(
+            Action::from_quicker_plugin_json(include_str!("../tests/fixtures/key-macro.json"))
+                .unwrap()
+                .needs_input_target()
+        );
+        assert!(
+            !Action::from_quicker_plugin_json(include_str!("../tests/fixtures/open-url.json"))
+                .unwrap()
+                .needs_input_target()
+        );
+        assert!(flow(serde_json::json!([{
+            "StepRunnerKey": "sys:simpleIf",
+            "ElseSteps": [{"StepRunnerKey": "sys:outputText"}]
+        }]))
+        .needs_input_target());
+        for operation in ["key_down", "key_up", "$= {operation}"] {
+            assert!(flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"type":{"Value":operation}, "key":{"Value":"Space"}}}])).needs_input_target());
+        }
+        assert!(!flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"key":{"Value":"Space"}}}])).needs_input_target());
+        assert!(!flow(serde_json::json!([{"StepRunnerKey":"sys:keyoperation", "InputParams":{"type":{"Value":"get_key_state"}, "key":{"Value":"Space"}}}])).needs_input_target());
+        assert!(!flow(serde_json::json!([{
+            "StepRunnerKey": "sys:simpleIf", "Disabled": true,
+            "IfSteps": [{"StepRunnerKey": "sys:keyInput"}]
+        }, {"StepRunnerKey": "sys:outputText", "Disabled": true}]))
+        .needs_input_target());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display; see scripts/smoke-x11.py"]
+    fn clipboard_persists_after_action_worker_exits() {
+        const TEXT: &str = "Quicker clipboard ownership regression";
+        if std::env::var_os("QUICKER_TEST_CLIPBOARD_READER").is_some() {
+            let mut clipboard = arboard::Clipboard::new().unwrap();
+            assert_eq!(clipboard.get_text().unwrap(), TEXT);
+            return;
+        }
+        thread::spawn(|| write_clipboard_text(TEXT).unwrap())
+            .join()
+            .unwrap();
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "action::tests::clipboard_persists_after_action_worker_exits",
+            ])
+            .env("QUICKER_TEST_CLIPBOARD_READER", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     fn action(kind: ActionKind) -> Action {
         Action {
             name: "Test".into(),
@@ -4493,12 +4654,30 @@ mod tests {
     }
 
     fn sample(path: &str) -> String {
-        fs::read_to_string(path).unwrap()
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
+    }
+
+    #[test]
+    fn expands_unicode_variable_names_without_consuming_following_text() {
+        let vars = HashMap::from([("名称".into(), Value::String("world".into()))]);
+        assert_eq!(expand_runtime_vars("hello {名称}!", &vars), "hello world!");
+    }
+
+    #[test]
+    fn import_export_preserves_unrecognized_quicker_metadata() {
+        let value = serde_json::json!({
+            "ActionType": 7, "Title": "Extended", "Data": "@CTRL+VK_C",
+            "FutureProperty": {"nested": [1, 2, 3]}, "UnknownFlag": true
+        });
+        let action = Action::from_quicker_plugin_json(&value.to_string()).unwrap();
+        let exported: Value =
+            serde_json::from_str(&action.to_quicker_plugin_json().unwrap()).unwrap();
+        assert_eq!(exported, value);
     }
 
     #[test]
     fn quicker_plugin_document_parses_sample_json() {
-        let sample = sample("sample/统一格式_20260319_095632.json");
+        let sample = sample("tests/fixtures/plain-text.json");
         let document: QuickerActionDocument =
             serde_json::from_str(&sample).expect("sample should match Quicker schema");
         let data = document
@@ -4506,9 +4685,9 @@ mod tests {
             .expect("sample data payload should parse");
 
         assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
-        assert_eq!(document.title, "统一格式");
-        assert_eq!(data.variables.len(), 6);
-        assert_eq!(data.steps.len(), 17);
+        assert_eq!(document.title, "Plain Text");
+        assert_eq!(data.variables.len(), 1);
+        assert_eq!(data.steps.len(), 4);
         assert_eq!(data.steps[0].step_runner_key, "sys:keyInput");
         assert_eq!(data.steps.last().unwrap().step_runner_key, "sys:keyInput");
     }
@@ -4523,7 +4702,7 @@ mod tests {
             hotkey: None,
             kind: ActionKind::PluginPipeline {
                 plugin: PluginPipelineStorage {
-                    quicker_json: sample("sample/统一格式_20260319_095632.json"),
+                    quicker_json: sample("tests/fixtures/plain-text.json"),
                 },
             },
         };
@@ -4538,27 +4717,22 @@ mod tests {
             .expect("exported data payload should parse");
 
         assert_eq!(document.action_type, QUICKER_PLUGIN_ACTION_TYPE);
-        assert_eq!(document.title, "统一格式");
-        assert_eq!(document.description, "将粘贴/导入内容的自带样式去除");
+        assert_eq!(document.title, "Plain Text");
+        assert_eq!(document.description, "");
         assert_eq!(document.enable_evaluate_variable, Some(true));
-        assert_eq!(data.variables.len(), 6);
-        assert_eq!(data.steps.len(), 17);
+        assert_eq!(data.variables.len(), 1);
+        assert_eq!(data.steps.len(), 4);
     }
 
     #[test]
     fn quicker_plugin_round_trips_as_native_json() {
-        let sample = sample("sample/统一格式_20260319_095632.json");
+        let sample = sample("tests/fixtures/plain-text.json");
 
         let parsed = Action::from_quicker_plugin_json(&sample).expect("sample should parse");
 
-        assert_eq!(parsed.name, "统一格式");
-        assert_eq!(parsed.description, "将粘贴/导入内容的自带样式去除");
-        assert_eq!(
-            parsed.icon.as_deref(),
-            Some(
-                "https://files.getquicker.net/_icons/2D62F4E62FD40AC3F99CB7ABE05B9E2FAE141A3B.png"
-            )
-        );
+        assert_eq!(parsed.name, "Plain Text");
+        assert_eq!(parsed.description, "");
+        assert_eq!(parsed.icon, None);
         assert_eq!(
             parsed.to_quicker_plugin_json().unwrap(),
             Action::from_quicker_plugin_json(&sample)
@@ -4573,9 +4747,8 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/快捷键_20260319_105627.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/open-url.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4593,7 +4766,7 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.key_results.push_back(Ok(())));
 
-        let action = Action::from_quicker_plugin_json(&sample("sample/定位_20260319_105649.json"))
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/key-macro.json"))
             .expect("sample should parse");
 
         let result = action.execute();
@@ -4609,9 +4782,8 @@ mod tests {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/ScreenToGif_20260319_095543.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/launch.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4636,9 +4808,8 @@ mod tests {
             runtime.key_results.push_back(Ok(()));
         });
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/图片转公式_20260319_105527.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/html-extract.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4694,7 +4865,7 @@ mod tests {
     fn quicker_plugin_executes_formula_to_image_sample() {
         reset_action_test_runtime();
         with_action_test_runtime(|runtime| {
-            runtime.message_box_results.push_back(Ok(()));
+            runtime.message_box_results.push_back(Ok("OK".into()));
             runtime
                 .folder_dialog_results
                 .push_back(Ok("/tmp/quicker-formula".into()));
@@ -4706,9 +4877,8 @@ mod tests {
             runtime.key_results.push_back(Ok(()));
         });
 
-        let action =
-            Action::from_quicker_plugin_json(&sample("sample/公式转图片_20260319_105519.json"))
-                .expect("sample should parse");
+        let action = Action::from_quicker_plugin_json(&sample("tests/fixtures/formula-image.json"))
+            .expect("sample should parse");
 
         let result = action.execute();
 
@@ -4809,16 +4979,19 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_supported_plugin_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/快捷键_20260319_105627.json",
-        ))
-        .expect("sample should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/open-url.json"))
+                .expect("sample should import");
 
         assert_eq!(draft.title, "快捷键");
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.steps.len(), 1);
         assert_eq!(
-            draft.steps,
+            draft
+                .steps
+                .iter()
+                .map(|step| step.editable().clone())
+                .collect::<Vec<_>>(),
             vec![LowCodePluginStep::OpenUrl {
                 url: "https://www.yuque.com/supermemo/wiki/keyboard-shortcuts".into()
             }]
@@ -4831,6 +5004,7 @@ mod tests {
         with_action_test_runtime(|runtime| runtime.open_results.push_back(Ok(())));
 
         let draft = LowCodePluginDraft {
+            source: None,
             kind: LowCodePluginKind::PluginFlow,
             title: "Docs".into(),
             description: "open docs".into(),
@@ -4855,10 +5029,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_key_macro_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/定位_20260319_105649.json",
-        ))
-        .expect("key macro should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/key-macro.json"))
+                .expect("key macro should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::KeyMacro);
         assert_eq!(
@@ -4872,10 +5045,9 @@ mod tests {
 
     #[test]
     fn low_code_draft_imports_open_app_json() {
-        let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/ScreenToGif_20260319_095543.json",
-        ))
-        .expect("launcher should import");
+        let draft =
+            LowCodePluginDraft::from_quicker_plugin_json(&sample("tests/fixtures/launch.json"))
+                .expect("launcher should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::OpenApp);
         assert_eq!(
@@ -4887,24 +5059,24 @@ mod tests {
     #[test]
     fn low_code_draft_imports_formula_to_image_json() {
         let draft = LowCodePluginDraft::from_quicker_plugin_json(&sample(
-            "sample/公式转图片_20260319_105519.json",
+            "tests/fixtures/formula-image.json",
         ))
         .expect("formula sample should import");
 
         assert_eq!(draft.kind, LowCodePluginKind::PluginFlow);
         assert_eq!(draft.title, "公式转图片");
         assert!(matches!(
-            draft.steps.first(),
+            draft.steps.first().map(LowCodePluginStep::editable),
             Some(LowCodePluginStep::StateStorageRead { .. })
         ));
         assert!(draft
             .steps
             .iter()
-            .any(|step| matches!(step, LowCodePluginStep::SimpleIf { .. })));
+            .any(|step| matches!(step.editable(), LowCodePluginStep::SimpleIf { .. })));
         assert!(draft
             .steps
             .iter()
-            .any(|step| matches!(step, LowCodePluginStep::ImageToBase64 { .. })));
+            .any(|step| matches!(step.editable(), LowCodePluginStep::ImageToBase64 { .. })));
     }
 
     #[test]
@@ -4936,6 +5108,7 @@ mod tests {
         });
 
         let draft = LowCodePluginDraft {
+            source: None,
             kind: LowCodePluginKind::KeyMacro,
             title: "Macro".into(),
             description: String::new(),

@@ -75,16 +75,12 @@ impl QuickerApp {
         let Some(toggle_hotkey) = self.toggle_hotkey else {
             return;
         };
-
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.id() == toggle_hotkey.id() && event.state() == HotKeyState::Pressed {
-                self.panel_hidden = !self.panel_hidden;
-                self.restore_panel_window(ctx);
-                if !self.panel_hidden {
-                    self.view = View::Panel;
-                    self.needs_focus_profile_sync = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if event.id == toggle_hotkey.id() && event.state == HotKeyState::Pressed {
+                if self.panel_hidden {
+                    self.show_panel(ctx);
+                } else {
+                    self.hide_panel(ctx);
                 }
             }
         }
@@ -99,7 +95,7 @@ impl QuickerApp {
         }
     }
 
-    pub(super) fn poll_action_result(&mut self) {
+    pub(super) fn poll_action_result(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.action_result_rx else {
             return;
         };
@@ -109,6 +105,12 @@ impl QuickerApp {
                 self.action_control = None;
                 self.pending_action_name = None;
                 self.action_result_rx = None;
+                if self.panel_hidden
+                    && (matches!(&message.result, ExecResult::Err(_))
+                        || matches!(&message.result, ExecResult::OkWithMessage(text) if text.len() > 100))
+                {
+                    self.show_panel(ctx);
+                }
                 self.handle_exec_result(&message.action_name, message.result);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -118,6 +120,7 @@ impl QuickerApp {
                     .unwrap_or_else(|| "Action".into());
                 self.action_control = None;
                 self.action_result_rx = None;
+                self.show_panel(ctx);
                 self.show_toast(format!("{action_name} stopped unexpectedly"), true);
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -166,7 +169,7 @@ impl QuickerApp {
         painter.circle_stroke(
             menu.origin,
             RADIAL_CENTER_RADIUS,
-            egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
         );
         painter.text(
             menu.origin,

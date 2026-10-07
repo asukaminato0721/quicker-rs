@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=Quicker-RS
+Comment=Quick actions for your Linux desktop
+Exec=quicker-rs --show
+Icon=net.getquicker.QuickerRS
+Terminal=false
+Categories=Utility;
+Keywords=launcher;automation;shortcuts;
+StartupWMClass=quicker-rs
+Actions=Toggle;Quit;
+
+[Desktop Action Toggle]
+Name=Toggle panel
+Exec=quicker-rs --toggle
+
+[Desktop Action Quit]
+Name=Quit
+Exec=quicker-rs --quit
