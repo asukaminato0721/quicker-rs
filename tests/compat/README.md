@@ -669,3 +669,58 @@ expressions, Markdown help, and custom add/edit subprograms remain unsupported.
 The checker rejects active unsupported options. It warns that sorting uses
 UTF-16 ordinal order instead of Windows culture order, and that lists use value
 copies instead of shared .NET objects. Native Wayland remains unverified.
+
+## Multi-field form evidence
+
+The MSI FormStep.Execute entry is at RVA `0x2eec60`. Its worker closure is
+`0x40eea0`, and the UI closure is `0x40f7c4`. The worker loads a static `Fields`
+document or a dynamic dictionary field array. It writes confirmed field values
+to variables or dictionary keys. Cancellation returns `button=Cancel`.
+The default confirmation returns an empty button value. Form validation and
+value collection use `0x1f9db8`. Normal reset reinitializes the controls at
+`0x1fa1f8`; the Windows Ctrl-reset clear command is not implemented on Linux.
+
+Dropdown initialization uses `0x1fcc58`. It evaluates `SelectionItems` after
+the form JSON is parsed. `InterpolateOrEvalToString` at `0x2a65bc` handles
+`$$` interpolation and `$=` expressions. The text converter at `0x2aa5fc`
+joins list items with LF. The original OpenCC `configList` variable is a text
+list. A GUI test found that the generic runtime comma conversion produced
+empty dropdown defaults. Form conversion now uses the MSI newline behavior.
+
+The dropdown parser at `0x106cec` accepts plain items, `title|value`, tooltip
+labels, comments, and an initial `|=delimiter` directive. Default selection
+at `0x1fcefc` tries an exact value before an ordinal case-insensitive match.
+The native implementation uses simple Unicode case folding; Unicode tables
+can differ. Icon choices remain explicit errors. File tools replace the whole
+field value, as the MSI handler at `0x201414` does for these configured tools.
+
+```sh
+cargo build --locked
+xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY \
+  QUICKER_COMPAT_CORPUS=/tmp/quicker-real-plugins \
+  dbus-run-session -- python3 scripts/smoke-forms-x11.py kdialog
+# Repeat with zenity for the GTK picker.
+```
+
+The test requires KWin, Xvfb, xdotool, xprop, D-Bus, ImageMagick, and the named
+picker backend. It uses isolated settings and an isolated application PATH.
+It checks validation retry, reset, cancellation, title-bar closure, dropdown
+selection, Unicode file paths, and cancellation of both the form and its picker.
+X11 sends text events with Alt shortcuts. A failed GUI test exposed letters
+being inserted into text fields. The form now consumes those text events too.
+
+With a corpus directory, the test verifies the pinned OpenCC hash and executes
+the unchanged forms at `/Steps/0/IfSteps/1/IfSteps/1` and
+`/Steps/0/IfSteps/3/IfSteps/0`. It loads original variable definitions and supplies
+controlled settings. The settings form preserves the expected choices and path.
+The conversion form rejects empty required fields, accepts a Unicode path from
+the native picker, and writes all four original variables on confirmation.
+The test does not run the external conversion scripts. The full action still
+has six unsupported runners, two Windows paths, and two complex expressions.
+
+Unit tests check typed values, dictionary modes, read-only fields, UTF-16 length,
+range and regex validation, field expressions, Unicode default selection, and
+atomic field writes. Both runtime and checker reject unsupported field controls
+and advanced settings. Date controls, groups, computed fields, custom buttons,
+Markdown help, and shared dictionary reference semantics remain incomplete.
+Native Wayland and remote CI remain unverified.

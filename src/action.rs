@@ -6,6 +6,7 @@ mod expression;
 mod file_dialogs;
 mod file_selection;
 mod file_steps;
+pub(crate) mod forms;
 pub(crate) mod input_tools;
 mod key_steps;
 mod list_steps;
@@ -2182,6 +2183,7 @@ impl QuickerRuntime {
             Some(runner::StepRunner::ShowWaitWin) => self.run_wait_window(step),
             Some(runner::StepRunner::UserInput) => self.run_input_dialog(step),
             Some(runner::StepRunner::ManageList) => self.run_manage_list(step),
+            Some(runner::StepRunner::Form) => self.run_form(step),
             Some(runner::StepRunner::Delay) => self.run_delay(step),
             Some(runner::StepRunner::KeyInput) => {
                 let keys = self.input_string(&step.input_params, "keys")?;

@@ -20,6 +20,8 @@ jobs:
       - run: cargo check --target wasm32-unknown-unknown --lib --locked
       - run: cargo build --locked
       - run: python3 scripts/test-check-shared-action.py
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY dbus-run-session -- python3 scripts/smoke-forms-x11.py kdialog
+      - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY dbus-run-session -- python3 scripts/smoke-forms-x11.py zenity
       - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY dbus-run-session -- python3 scripts/smoke-list-windows-x11.py
       - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY dbus-run-session -- python3 scripts/smoke-input-tools-x11.py kdialog
       - run: xvfb-run -a -s '-screen 0 1280x900x24' env -u WAYLAND_DISPLAY dbus-run-session -- python3 scripts/smoke-input-tools-x11.py zenity

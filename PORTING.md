@@ -553,6 +553,33 @@ establish completion of the port.
   unverified. Menu-data parsing, display expressions, Markdown help, custom
   add/edit subprograms, and shared list reference semantics remain incomplete.
 
+## Step 25: Native multi-field forms (2026-10-07)
+
+- Inspected the MSI form worker, window creation, submission, reset, dropdown
+  parser, default selection, text conversion, and text-tool result handler.
+  Added `sys:form` for variables, dictionaries, and dynamic dictionary definitions.
+  Parse static JSON before evaluating field expressions. Validate all submitted
+  values before writing fields. Cancellation preserves the original values.
+- Added text and multiline fields, dropdowns, checkboxes, numeric text entry,
+  passwords, read-only text, section separators, validation, reset, and native
+  path tools. Added dimensions, topMost, focus restoration, and keyboard commands.
+  Picker work and regex validation run outside the UI thread. Action cancellation
+  closes the form and its active picker, even with `stopIfFail=false`.
+- Real OpenCC forms exposed the required LF conversion for list-based choices.
+  Fixed that conversion and tested quoted option text. GUI tests also exposed
+  Alt shortcut text entering fields. Consumed the corresponding text events.
+- Both original OpenCC forms execute without changing their JSON. The settings
+  form retains controlled defaults. The conversion form validates required fields
+  and accepts a Unicode file path. The complete action retains six unsupported
+  runners, two Windows paths, and two complex expressions.
+- Validation: 194 native tests and seven corpus tests passed. Clippy passed with
+  warnings denied. Wasm compiled with 132 preview dead-code warnings. Added Qt
+  and GTK form tests to CI. Remote CI and native Wayland remain unverified.
+  Groups, dynamic field updates, expression validation, date and other advanced
+  controls, custom buttons, Markdown help, and shared dictionary references
+  remain incomplete. Automatic downloader work, selection windows, and complex
+  C# execution remain deferred.
+
 ## Next implementation priorities (goal remains active)
 
 The user emphasized plugin support. Prioritize compatibility and executable

@@ -322,7 +322,114 @@ fn visit(
     }
 }
 
+fn check_form(step: &Value, path: &str, issues: &mut Vec<Value>) {
+    issue(
+        issues,
+        path,
+        "form_requires_native_linux_application",
+        "warning",
+    );
+    issue(
+        issues,
+        path,
+        "form_variables_and_types_require_runtime_validation",
+        "warning",
+    );
+    let params = &step["InputParams"];
+    let dynamic = |binding: &Value| {
+        binding["VarKey"].is_string()
+            || binding["Value"]
+                .as_str()
+                .is_some_and(|s| s.trim_start().starts_with("$=") || s.contains("$${"))
+    };
+    for key in forms::OPTIONS {
+        let binding = &params[key];
+        let p = format!("{path}/InputParams/{key}");
+        if dynamic(binding) {
+            issue(issues, &p, "dynamic_option_requires_validation", "warning");
+        } else if !binding["Value"].is_null() && !forms::validate_option(key, &binding["Value"]) {
+            issue(issues, &p, "unsupported_form_option", "blocker");
+        }
+    }
+    if truthy(params["restoreFocus"].get("Value")) || dynamic(&params["restoreFocus"]) {
+        issue(
+            issues,
+            path,
+            "dialog_focus_restoration_requires_x11",
+            "warning",
+        );
+    }
+    if dynamic(&params["operation"]) {
+        issue(
+            issues,
+            path,
+            "dynamic_form_definition_requires_validation",
+            "warning",
+        );
+        return;
+    }
+    let mode = params["operation"]["Value"].as_str().unwrap_or("variables");
+    if matches!(mode, "dict" | "dict_dynamic") {
+        issue(
+            issues,
+            path,
+            "dictionary_values_do_not_share_dotnet_reference_identity",
+            "warning",
+        );
+        if !params["dictVar"]["VarKey"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+        {
+            issue(issues, path, "form_requires_dictionary_variable", "blocker");
+        }
+    }
+    let key = match mode {
+        "dict" => "formForDictDef",
+        "dict_dynamic" => "dynamicFormForDictDef",
+        _ => "formDef",
+    };
+    let binding = &params[key];
+    let p = format!("{path}/InputParams/{key}");
+    // Embedded field expressions do not make a literal JSON definition dynamic.
+    if mode == "dict_dynamic"
+        && (binding["VarKey"].is_string()
+            || binding["Value"]
+                .as_str()
+                .is_some_and(|s| s.trim_start().starts_with("$=") || s.starts_with("$$")))
+    {
+        issue(
+            issues,
+            &p,
+            "dynamic_form_definition_requires_validation",
+            "warning",
+        );
+        return;
+    }
+    match forms::definition(&binding["Value"], mode == "dict_dynamic") {
+        Ok(fields) => {
+            for (index, field) in fields.iter().enumerate() {
+                for key in ["Label", "HelpText", "SelectionItems"] {
+                    if let Some(text) = field[key].as_str() {
+                        let p = format!("{p}/Fields/{index}/{key}");
+                        if text.starts_with("$=") {
+                            if let Err(error) = expression::validate(text) {
+                                issues.push(json!({"path":p,"code":"unsupported_expression","severity":"blocker","detail":error}));
+                            }
+                        } else if text.starts_with("$$") {
+                            issue(issues, &p, "dynamic_form_field_requires_validation", "warning");
+                        }
+                    }
+                }
+            }
+        }
+        Err(error) => issues.push(json!({"path":p,"code":"unsupported_form_definition","severity":"blocker","detail":error})),
+    }
+}
+
 fn check_options(step: &Value, path: &str, runner: &str, issues: &mut Vec<Value>) {
+    if runner == "sys:form" {
+        check_form(step, path, issues);
+    }
     if runner == "sys:manageList" {
         issue(
             issues,

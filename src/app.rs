@@ -1043,6 +1043,8 @@ impl eframe::App for QuickerApp {
         crate::wait_windows::render(ctx);
         #[cfg(target_os = "linux")]
         crate::input_windows::render(ctx);
+        #[cfg(target_os = "linux")]
+        crate::form_windows::render(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         crate::list_windows::render(ctx);
         self.render_radial_menu(ctx);

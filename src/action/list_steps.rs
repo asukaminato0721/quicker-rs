@@ -82,7 +82,7 @@ fn array(items: Vec<String>) -> Value {
 
 // A simple uppercase mapping avoids expanding one character into multiple
 // characters. Unicode tables can still differ from .NET Framework.
-fn ordinal_fold(text: &str) -> String {
+pub(super) fn ordinal_fold(text: &str) -> String {
     text.chars()
         .map(|c| {
             let mut upper = c.to_uppercase();

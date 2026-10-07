@@ -7,6 +7,8 @@ mod clipboard_monitor;
 mod config;
 mod focus;
 #[cfg(target_os = "linux")]
+mod form_windows;
+#[cfg(target_os = "linux")]
 mod input_windows;
 #[cfg(not(target_arch = "wasm32"))]
 mod list_windows;

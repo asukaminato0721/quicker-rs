@@ -238,6 +238,35 @@ Focus restoration requires X11. Disable `restoreFocus` on native Wayland.
 The X11 tests cover local kdialog and zenity windows. Desktop portal dialogs
 and native Wayland behavior require separate validation.
 
+`sys:form` opens a native form for action variables or existing dictionary keys.
+It accepts `variables`, `dict`, and `dict_dynamic`. Static definitions use a
+`Fields` object. Dynamic dictionary definitions use a JSON field array.
+Definitions are parsed before field expressions are evaluated. Text-list choices
+use newline separators. Dropdowns preserve separate labels, values, and tooltips.
+They select an exact initial value first, then try a simple Unicode case match.
+Unicode case tables can differ from .NET Framework.
+
+Supported controls are single-line/multiline text, dropdowns, checkboxes,
+numeric text entry, password text, read-only display, and section separators.
+Forms support required values, regex validation, UTF-16 maximum lengths,
+numeric bounds, read-only fields, label/input widths, topMost, and the four
+built-in path tools. Save validates all fields before writing variables.
+Reset restores the initial values. Cancel or title-bar closure retains the
+original variables and returns `button=Cancel`. Save returns an empty button
+value. `stopIfFail` defaults to true. Action cancellation always stops execution
+and closes an active file picker. Alt+S saves, Alt+C cancels, and Alt+R resets.
+Enter submits unless disabled, a dropdown is open, or multiline input has focus.
+
+Forms allow 128 fields, 256 KiB per field value, 1 MiB per definition, 4 MiB
+total field content, and 32 open windows. Numeric entry does not include the
+Windows spinner controls. Date, slider, color, multi-select, editable dropdown,
+and dictionary-editor controls remain unsupported. Groups, visibility and
+computed-field expressions, refresh settings, custom buttons, title accelerators,
+Markdown help, custom placement, and negative adaptive label widths also remain
+unsupported. The checker reports unsupported static definitions and options.
+Dynamic definitions and variable types also require runtime validation.
+Dictionary edits use value copies. Native Wayland remains unverified.
+
 `sys:showText` uses native application windows. It supports `WAIT`, `NO_WAIT`,
 `CLOSE_WINDOW`, `GET_WIN_INFO`, `APPEND_TEXT`, `ACTIVATE_WINDOW`, and `WAIT_CLOSE`.
 Windows can remain open after an action ends. A nonempty `autoCloseKey` identifies
